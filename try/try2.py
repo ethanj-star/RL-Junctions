@@ -17,7 +17,7 @@ print("状态空间:", env.observation_space)
 # 3. 启动环境，提取第 0 秒的初始状态
 initial_state = env.reset()
 
-print("初始状态数据是:", initial_state)
+print("初始状态数据是-", initial_state)
 
 # 跑完先关闭，不往下循环
 env.close()
