@@ -43,9 +43,15 @@ class ThreeJunctionCentralizedWrapper(gym.Wrapper):
         # 3. 压扁状态
         next_obs_array = np.concatenate([next_obs_dict[agent] for agent in self.agents])
 
+        # ---------- 修改前 ----------
         # 4. 设计你的专属奖励机制 (Reward Shaping)
         # 这里用最简单的：把三个路口的奖励加起来求和
-        total_reward = sum(reward_dict.values())
+        # total_reward = sum(reward_dict.values())
+
+        # ---------- 修改后 ----------
+        # 4. 设计你的专属奖励机制 (Reward Shaping)
+        # 将三个路口的奖励求平均，防止数值过大导致梯度爆炸
+        total_reward = sum(reward_dict.values()) / len(self.agents)
 
         # 5. 处理结束标志 (如果任何一个路口结束，或者整体超时，就结束)
         # 注意 sumo-rl 旧版 done 可能是 dict 或者 bool

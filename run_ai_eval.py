@@ -35,9 +35,9 @@ def run_ai_evaluation():
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-    print("✅ AI 测试跑完啦！环境关闭中...")
+    print("AI 测试跑完啦！环境关闭中...")
     env.close()
-    print("🎉 恭喜！去 logs 文件夹下查看 ai_stats.xml 吧！")
+    print("恭喜！去 logs 文件夹下查看 ai_stats.xml 吧！")
 
 
 if __name__ == "__main__":
