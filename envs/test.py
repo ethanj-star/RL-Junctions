@@ -9,8 +9,8 @@ def run_test():
 
     # 1. 创建底层的 SUMO 环境 (这次一定要把 use_gui 改为 True，为了看动画)
     raw_env = SumoEnvironment(
-        net_file='SUMOroutes.net.xml',
-        route_file='traffic.rou.rou.xml',
+        net_file='../SUMOroutes.net.xml',
+        route_file='../traffic.rou.rou.xml',
         out_csv_name='logs/test_output',
         use_gui=True,  # 开启可视化界面
         num_seconds=3600  # 跑 1 个小时的仿真
@@ -21,7 +21,7 @@ def run_test():
 
     # 3. 加载你训练好的模型
     # 注意路径要和你 train.py 里保存的路径完全一致
-    model_path = "防覆盖log/ppo_3juc_multi.zip"
+    model_path = "../防覆盖log/ppo_3juc_multi.zip"
     model = PPO.load(model_path)
 
     print("模型加载成功 开始仿真测试...")

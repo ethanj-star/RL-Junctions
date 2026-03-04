@@ -6,8 +6,8 @@ def run_fixed_time_baseline():
     print("开始运行固定配时 (Baseline) 仿真...")
 
     # 确保 logs 文件夹存在
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
+    if not os.path.exists('../logs'):
+        os.makedirs('../logs')
 
     # 配置纯 SUMO 的启动命令
     # 这里用 "sumo" 而不是 "sumo-gui"，因为后台计算速度极快，几秒钟就能跑完 1 小时的数据

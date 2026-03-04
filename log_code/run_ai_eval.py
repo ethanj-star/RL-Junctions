@@ -9,12 +9,12 @@ def run_ai_evaluation():
 
     # 1. 创建底层环境
     raw_env = SumoEnvironment(
-        net_file='SUMOroutes.net.xml',
-        route_file='traffic.rou.rou.xml',
+        net_file='../SUMOroutes.net.xml',
+        route_file='../traffic.rou.rou.xml',
         out_csv_name='logs/ai_test_output',
         use_gui=False,  # 关掉 GUI，让后台全速计算，几秒钟就能跑完拿数据！
         num_seconds=3600,
-        # 👇 核心在这里：让 AI 跑的时候也顺便生成这两份报表！
+        # 核心在这里：让 AI 跑的时候也顺便生成这两份报表！
         additional_sumo_cmd="--statistic-output logs/ai_stats.xml --tripinfo-output logs/ai_tripinfo.xml"
     )
 

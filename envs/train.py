@@ -9,8 +9,8 @@ def make_env(rank, seed=0):
     def _init():
         out_csv = f'logs/output_process_{rank}'
         raw_env = SumoEnvironment(
-            net_file='SUMOroutes.net.xml',
-            route_file='traffic.rou.rou.xml',
+            net_file='../SUMOroutes.net.xml',
+            route_file='../traffic.rou.rou.xml',
             out_csv_name=out_csv,
             use_gui=False,
             num_seconds=3600
@@ -23,7 +23,7 @@ def make_env(rank, seed=0):
 
 if __name__ == '__main__':
     num_cpu = 4
-    print(f"🚀 正在后台启动 {num_cpu} 个并行的 SUMO 环境...")
+    print(f"正在后台启动 {num_cpu} 个并行的 SUMO 环境...")
 
     env = SubprocVecEnv([make_env(i) for i in range(num_cpu)])
     env = VecMonitor(env)
@@ -57,4 +57,4 @@ if __name__ == '__main__':
     env.save("saved_models/vec_normalize.pkl")
 
     env.close()
-    print("✅ 训练完成，模型已保存！")
+    print("训练完成，模型已保存！")

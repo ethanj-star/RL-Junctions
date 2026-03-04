@@ -49,12 +49,12 @@ def parse_tripinfo(file_path, label):
 def main():
     print("正在读取数据...")
     # 1. 提取宏观数据
-    baseline_stats = parse_stats("logs/baseline_stats.xml")
-    ai_stats = parse_stats("logs/ai_stats.xml")
+    baseline_stats = parse_stats("../logs/baseline_stats.xml")
+    ai_stats = parse_stats("../logs/ai_stats.xml")
 
     # 2. 提取微观数据
-    df_baseline = parse_tripinfo("logs/baseline_tripinfo.xml", "固定配时 (Baseline)")
-    df_ai = parse_tripinfo("logs/ai_tripinfo.xml", "强化学习 (AI)")
+    df_baseline = parse_tripinfo("../logs/baseline_tripinfo.xml", "固定配时 (Baseline)")
+    df_ai = parse_tripinfo("../logs/ai_tripinfo.xml", "强化学习 (AI)")
 
     df_all = pd.concat([df_baseline, df_ai], ignore_index=True)
 
