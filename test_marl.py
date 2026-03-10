@@ -29,12 +29,11 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
         return results
 
 
-# ======================================================
 
 def run_marl_test():
     print("正在加载 MARL 环境和模型...")
 
-    # 1. 创建原生的 PettingZoo 多智能体并行环境 (开启 GUI 看动画)
+    # 创建原生的 PettingZoo 多智能体并行环境 (开启 GUI 看动画)
     env = parallel_env(
         net_file='SUMOroutes.net.xml',  # 注意检查路径，如果你的 test.py 在子文件夹里，这里要加 ../
         route_file='traffic.rou.rou.xml',
@@ -44,33 +43,33 @@ def run_marl_test():
         reward_fn='pressure'  # 必须和训练时保持一致
     )
 
-    # 2. SuperSuit 魔法转换 (还原训练时的架构)
+    # SuperSuit 魔法转换 (还原训练时的架构)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = ss.concat_vec_envs_v1(env, num_vec_envs=1, num_cpus=1, base_class='stable_baselines3')
 
-    # 3. 套上 5 返回值兼容补丁
+    # 套上 5 返回值兼容补丁
     env = SB3CompatibilityWrapper(env)
 
-    # 4. 【最关键的一步】：加载训练时保存的 VecNormalize 统计数据 (戴上眼镜)
+    # 加载训练时保存的 VecNormalize 统计数据 (戴上眼镜)
     norm_path = "saved_models/vec_normalize_marl.pkl"
     if not os.path.exists(norm_path):
-        print(f"❌ 找不到归一化文件: {norm_path}，AI 将无法理解环境！")
+        print(f"找不到归一化文件: {norm_path}，AI 将无法理解环境！")
         return
 
     env = VecNormalize.load(norm_path, env)
-    # 【必须设置】告诉它这是考试不是训练，不要再更新均值和方差了！
+    # 告诉它这是考试不是训练，不要再更新均值和方差了！
     env.training = False
-    # 【必须设置】测试时我们想看真实的原始奖励（比如 -500），而不是被缩放后的小数（比如 -0.2）
+    # 测试时我们想看真实的原始奖励（比如 -500），而不是被缩放后的小数（比如 -0.2）
     env.norm_reward = False
 
     # 5. 加载你训练好的 MARL 模型
-    model_path = "saved_models/ppo_marl_3juc.zip"
+    model_path = "防覆盖log/ppo_marl_3juc.zip"
     if not os.path.exists(model_path):
-        print(f"❌ 找不到模型文件: {model_path}")
+        print(f"找不到模型文件: {model_path}")
         return
 
     model = PPO.load(model_path)
-    print("✅ 模型和归一化参数加载成功！开始仿真测试...")
+    print("模型和归一化参数加载成功！开始仿真测试")
 
     # 6. 运行交互循环
     obs = env.reset()
@@ -92,7 +91,7 @@ def run_marl_test():
         if np.any(dones):
             break
 
-    print(f"\n🎉 测试结束！")
+    print(f"\n测试结束！")
     print(f"总共运行控制步数: {step}")
     print(f"3个路口总累计奖励 (Pressure 越接近0越好): {total_reward:.2f}")
 
