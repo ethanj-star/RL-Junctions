@@ -40,7 +40,7 @@ def run_marl_test():
         out_csv_name='logs/test_marl_output',
         use_gui=True,  # 开启可视化界面
         num_seconds=3600,
-        reward_fn='pressure'  # 必须和训练时保持一致
+        reward_fn='queue'  # 必须和训练时保持一致
     )
 
     # SuperSuit 魔法转换 (还原训练时的架构)
@@ -63,7 +63,7 @@ def run_marl_test():
     env.norm_reward = False
 
     # 5. 加载你训练好的 MARL 模型
-    model_path = "防覆盖log/ppo_marl_3juc.zip"
+    model_path = r"C:\Users\DJI\Desktop\dissertation\3JucRL\03 queue 500000\checkpoints\rl_model_300000_steps.zip"
     if not os.path.exists(model_path):
         print(f"找不到模型文件: {model_path}")
         return

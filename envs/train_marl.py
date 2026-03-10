@@ -44,7 +44,7 @@ if __name__ == '__main__':
     print("正在初始化多智能体 SUMO 环境...")
 
     #第一道保险：固定全局随机种子，拒绝玄学炼丹
-    seed = 42
+    seed = 666
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
