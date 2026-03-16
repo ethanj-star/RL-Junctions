@@ -5,6 +5,27 @@ from stable_baselines3.common.vec_env import VecNormalize, VecEnvWrapper
 from sumo_rl import parallel_env
 import supersuit as ss
 
+# ====== 1. 核心路径动态获取 (与 train_marl.py 保持同步) ======
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(CURRENT_DIR)
+
+net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
+route_path = os.path.join(ROOT_DIR, 'traffic.rou.rou.xml')
+
+# ====== 2. 手动指定你要测试哪一次训练的模型 ======
+# 比如你想测试第 1 次跑出来的模型，就写 1
+RUN_IDX = 1
+RUN_DIR = os.path.join(ROOT_DIR, 'saved_models', f'marl_run_{RUN_IDX}')
+LOG_DIR = os.path.join(ROOT_DIR, 'logs', f'marl_run_{RUN_IDX}')
+
+# 默认加载训练结束时保存的最终模型
+MODEL_PATH = os.path.join(RUN_DIR, 'ppo_marl_model.zip')
+VEC_NORM_PATH = os.path.join(RUN_DIR, 'vec_normalize_marl.pkl')
+
+# 【高级玩法】：如果你不想测最终模型，而是想测训练到一半的某个 Checkpoint (比如 300000 步)
+# 请取消下面这行代码的注释，并修改对应的步数：
+# MODEL_PATH = os.path.join(RUN_DIR, 'checkpoints', 'rl_model_300000_steps.zip')
+
 
 # ====== 依然需要这个魔法补丁来处理 API 版本冲突 ======
 class SB3CompatibilityWrapper(VecEnvWrapper):
@@ -29,15 +50,14 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
         return results
 
 
-
 def run_marl_test():
-    print("正在加载 MARL 环境和模型...")
+    print(f"正在加载第 {RUN_IDX} 次 MARL 训练的环境和模型...")
 
     # 创建原生的 PettingZoo 多智能体并行环境 (开启 GUI 看动画)
     env = parallel_env(
-        net_file='../SUMOroutes.net.xml',  # 注意检查路径，如果你的 test.py 在子文件夹里，这里要加 ../
-        route_file='../traffic.rou.rou.xml',
-        out_csv_name='logs/test_marl_output',
+        net_file=net_path,
+        route_file=route_path,
+        out_csv_name=os.path.join(LOG_DIR, 'test_marl_output'), # 测试数据也会自动存在对应的 run 文件夹下
         use_gui=True,  # 开启可视化界面
         num_seconds=3600,
         reward_fn='queue'  # 必须和训练时保持一致
@@ -51,25 +71,23 @@ def run_marl_test():
     env = SB3CompatibilityWrapper(env)
 
     # 加载训练时保存的 VecNormalize 统计数据 (戴上眼镜)
-    norm_path = "../saved_models/vec_normalize_marl.pkl"
-    if not os.path.exists(norm_path):
-        print(f"找不到归一化文件: {norm_path}，AI 将无法理解环境！")
+    if not os.path.exists(VEC_NORM_PATH):
+        print(f"❌ 找不到归一化文件: {VEC_NORM_PATH}，AI 将无法理解环境！")
         return
 
-    env = VecNormalize.load(norm_path, env)
+    env = VecNormalize.load(VEC_NORM_PATH, env)
     # 告诉它这是考试不是训练，不要再更新均值和方差了！
     env.training = False
     # 测试时我们想看真实的原始奖励（比如 -500），而不是被缩放后的小数（比如 -0.2）
     env.norm_reward = False
 
     # 5. 加载你训练好的 MARL 模型
-    model_path = r"C:\Users\DJI\Desktop\dissertation\3JucRL\03 queue 500000\checkpoints\rl_model_300000_steps.zip"
-    if not os.path.exists(model_path):
-        print(f"找不到模型文件: {model_path}")
+    if not os.path.exists(MODEL_PATH):
+        print(f"❌ 找不到模型文件: {MODEL_PATH}，请检查 RUN_IDX 编号或文件路径。")
         return
 
-    model = PPO.load(model_path)
-    print("模型和归一化参数加载成功！开始仿真测试")
+    model = PPO.load(MODEL_PATH)
+    print("✅ 模型和归一化参数加载成功！开始仿真测试...")
 
     # 6. 运行交互循环
     obs = env.reset()
@@ -91,12 +109,11 @@ def run_marl_test():
         if np.any(dones):
             break
 
-    print(f"\n测试结束！")
+    print(f"\n🎉 测试结束！")
     print(f"总共运行控制步数: {step}")
-    print(f"3个路口总累计奖励 (Pressure 越接近0越好): {total_reward:.2f}")
+    print(f"3个路口总累计奖励 (排队越少负数越小): {total_reward:.2f}")
 
     env.close()
-
 
 if __name__ == "__main__":
     run_marl_test()

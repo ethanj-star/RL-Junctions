@@ -8,6 +8,27 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize, VecEnvWra
 from sumo_rl import parallel_env
 import supersuit as ss
 
+# ====== 1. 核心路径动态获取 (防迷路) ======
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(CURRENT_DIR)
+
+net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
+route_path = os.path.join(ROOT_DIR, 'traffic.rou.rou.xml')
+
+# ====== 2. 自动编号神器：寻找下一个可用的 Run 编号 ======
+def get_next_run_number(base_dir, prefix="marl_run_"):
+    """扫描目录，找到最大的 run 编号并 +1"""
+    if not os.path.exists(base_dir):
+        return 1
+    existing_runs = []
+    for folder in os.listdir(base_dir):
+        if folder.startswith(prefix):
+            try:
+                num = int(folder.replace(prefix, ""))
+                existing_runs.append(num)
+            except ValueError:
+                continue
+    return max(existing_runs) + 1 if existing_runs else 1
 
 
 # ====== 魔法补丁：解决 5 个返回值与 4 个返回值的 API 世纪冲突 ======
@@ -49,11 +70,34 @@ if __name__ == '__main__':
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    # ================== 核心修改：动态分配本次实验的专属路径 ==================
+    saved_models_base = os.path.join(ROOT_DIR, 'saved_models')
+    logs_base = os.path.join(ROOT_DIR, 'logs')
+    os.makedirs(saved_models_base, exist_ok=True)
+    os.makedirs(logs_base, exist_ok=True)
+
+    # 自动计算本次是 MARL 的第几次运行！
+    run_idx = get_next_run_number(saved_models_base, "marl_run_")
+    print(f"\n🚀 自动检测到历史记录，本次 MARL 分配为: [ 第 {run_idx} 次运行 ]")
+
+    # 创建本次运行的专属模型保存文件夹
+    run_save_dir = os.path.join(saved_models_base, f'marl_run_{run_idx}')
+    os.makedirs(run_save_dir, exist_ok=True)
+
+    # 创建本次运行的专属 CSV 日志文件夹
+    run_csv_dir = os.path.join(logs_base, f'marl_run_{run_idx}')
+    os.makedirs(run_csv_dir, exist_ok=True)
+    csv_base_path = os.path.join(run_csv_dir, 'marl_output')
+
+    # Tensorboard 总目录依然保持不变，方便把多条曲线画在同一张图里对比
+    tensorboard_log_path = os.path.join(logs_base, 'ppo_marl_tb')
+    # =========================================================================
+
     # 1. 创建原生的 PettingZoo 多智能体并行环境
     env = parallel_env(
-        net_file='SUMOroutes.net.xml',
-        route_file='traffic.rou.rou.xml',
-        out_csv_name='logs/marl_output',
+        net_file=net_path,
+        route_file=route_path,
+        out_csv_name=csv_base_path,  # <--- 使用动态生成的CSV日志路径
         use_gui=False,
         num_seconds=3600,
         reward_fn='queue'
@@ -104,26 +148,28 @@ if __name__ == '__main__':
         verbose=1,  # 日志级别：设置为 1 就是让它把 FPS、ep_rew_mean 这些表格数据打印
         device="cpu",# 计算设备：指定底层张量运算使用 CPU。由于本研究的 MLP 网络参数量较小，且 SUMO 仿真高度依赖 CPU 单线程计算，
         # 避免 GPU/CPU 之间的数据拷贝可降低通信延迟，提升整体采样效率（FPS）。
-
-
+        tensorboard_log=tensorboard_log_path  # <--- 统一定位到 TB 日志主目录
     )
 
     # ====== 第二道保险：定时自动存档 (Checkpoint) ======
-    # 每隔 50000 步，自动把模型备份到 saved_models/checkpoints/ 文件夹里
+    # 每隔 50000 步，自动把模型备份到当前专属的 run 文件夹里
     checkpoint_callback = CheckpointCallback(
         save_freq=50000,
-        save_path='./saved_models/checkpoints/',
+        save_path=os.path.join(run_save_dir, 'checkpoints'),
         name_prefix='rl_model'
     )
 
     print("环境就绪！SB3 正在接收多智能体数据流。开始训练...")
-    model.learn(total_timesteps=500000, callback=checkpoint_callback)
+    # tb_log_name 会在 Tensorboard 目录下自动新建 "run_1", "run_2" 子文件夹
+    model.learn(total_timesteps=10000, callback=checkpoint_callback, tb_log_name=f"run_{run_idx}")
 
-    # 8. 保存模型和归一化参数
-    model.save("saved_models/ppo_marl_3juc-1")
+    # 8. 保存模型和归一化参数到专属文件夹
+    model.save(os.path.join(run_save_dir, "ppo_marl_model"))
     #把所有传给 AI 的状态和奖励，都强行缩放到了一个非常小且标准的范围内（通常是 均值为 0，方差为 1）。
     #和训练时候一样，测试也要归一化
-    env.save("saved_models/vec_normalize_marl.pkl")
+    env.save(os.path.join(run_save_dir, "vec_normalize_marl.pkl"))
 
     env.close()
-    print("多智能体训练完成，模型与日志均已保存！")
+    print(f"\n✅ 多智能体训练完成！所有产出均已安全保存至专属目录:")
+    print(f"模型与断点: {run_save_dir}")
+    print(f"日志文件: {run_csv_dir}")

@@ -1,111 +1,144 @@
-import os
-import glob
-import re
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import glob
+import os
+import re
 
-# ================= 1. 配置你的 5 个 Seed 文件夹路径 =================
-# 注意路径前面的 r 不要删，防止转义报错
-folders = [
-    r"C:\Users\DJI\Desktop\dissertation\3JucRL\03 queue 500000 s42",
-    r"C:\Users\DJI\Desktop\dissertation\3JucRL\04 queue 500000 s2026",
-    r"C:\Users\DJI\Desktop\dissertation\3JucRL\05 queue 500000 s99",
-    r"C:\Users\DJI\Desktop\dissertation\3JucRL\06 queue 500000 s666"
-]
-
-# 解决 Matplotlib 中文显示问题
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
+# ====== 解决 Matplotlib 中文显示问题 ======
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
 
+# ================= 1. 核心配置区 =================
+# 填入你多次训练 (不同 Seed 或 Run) 的 logs 文件夹绝对/相对路径
+RUN_DIRS = [
+    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\marl_run_1",
+    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\marl_run_2"
+]
 
-def process_data():
-    all_data = []
-    print("正在努力读取数百个 CSV 文件，请稍候...")
+# 实验名称（将显示在图例中）
+EXP_NAME = "MARL PPO"  # 如果画单智能体，改为 "Single-Agent PPO"
 
-    # 遍历每个 seed 的文件夹
-    for seed_idx, folder in enumerate(folders):
-        if not os.path.exists(folder):
-            print(f" 警告：找不到文件夹 {folder}")
+# 曲线颜色配置 (保持和之前一致)
+# MARL 推荐色: 等待时间 '#e74c3c'(红), 排队长度 '#2ecc71'(绿)
+# Single 推荐色: 等待时间 '#9b59b6'(紫), 排队长度 '#3498db'(蓝)
+COLOR_WAIT = '#e74c3c'
+COLOR_QUEUE = '#2ecc71'
+
+# 平滑窗口大小
+WINDOW_SIZE = 5
+
+
+def process_multiple_runs():
+    all_runs_data = []
+    print(f"正在读取 {len(RUN_DIRS)} 个实验批次的数据，请稍候...")
+
+    for run_idx, run_dir in enumerate(RUN_DIRS):
+        if not os.path.exists(run_dir):
+            print(f"❌ 警告：找不到文件夹 {run_dir}，已跳过。")
             continue
 
-        # 寻找该文件夹下所有的 _epXXX.csv 文件
-        csv_files = glob.glob(os.path.join(folder, "*_ep*.csv"))
+        # 抓取当前 Seed 文件夹下所有的 CSV
+        csv_files = glob.glob(os.path.join(run_dir, "*.csv"))
+        # 排除测试阶段生成的日志
+        csv_files = [f for f in csv_files if "test" not in os.path.basename(f).lower()]
 
-        for file in csv_files:
-            # 用正则表达式提取文件名中的回合数 (Episode)
-            match = re.search(r'_ep(\d+)\.csv', file)
-            if match:
-                ep_num = int(match.group(1))
+        df_list = []
+        for f in csv_files:
+            basename = os.path.basename(f)
+            try:
+                # 精准提取 Episode
+                match = re.search(r'ep(\d+)\.csv', basename)
+                if match:
+                    ep_num = int(match.group(1))
+                    temp_df = pd.read_csv(f)
+                    temp_df['episode'] = ep_num
+                    df_list.append(temp_df)
+            except Exception as e:
+                pass
 
-                try:
-                    df = pd.read_csv(file)
-                    # sumo-rl 的 csv 包含每一步的数据，我们计算整个回合的平均表现
-                    # 提取系统平均等待时间和系统总排队数 (如果不叫这两个名字，请打开你的csv看一眼表头并修改这里)
-                    ep_mean_wait = df['system_total_waiting_time'].mean()
-                    ep_mean_queue = df['system_total_stopped'].mean()
+        if not df_list:
+            continue
 
-                    all_data.append({
-                        'Seed': f"Seed_{seed_idx}",
-                        'Episode': ep_num,
-                        'Waiting Time (s)': ep_mean_wait,
-                        'Queue Length': ep_mean_queue
-                    })
-                except Exception as e:
-                    print(f"读取文件出错 {file}: {e}")
+        # 拼接当前 Seed 下的所有文件
+        df_run = pd.concat(df_list, ignore_index=True)
 
-    # 把收集到的所有数据变成一个 Pandas 巨表
-    return pd.DataFrame(all_data)
+        # 1. 聚合当前 Seed 下多进程的统一表现
+        run_ep_stats = df_run.groupby('episode').agg({
+            'system_total_waiting_time': 'mean',
+            'system_total_stopped': 'mean'
+        }).reset_index()
+
+        run_ep_stats = run_ep_stats.sort_values(by='episode').reset_index(drop=True)
+
+        # 2. 对当前 Seed 的曲线进行时间序列平滑处理
+        run_ep_stats['smoothed_waiting'] = run_ep_stats['system_total_waiting_time'].rolling(window=WINDOW_SIZE,
+                                                                                             min_periods=1).mean()
+        run_ep_stats['smoothed_stopped'] = run_ep_stats['system_total_stopped'].rolling(window=WINDOW_SIZE,
+                                                                                        min_periods=1).mean()
+
+        # 3. 打上身份标签，证明它属于哪个 Seed
+        run_ep_stats['Run_ID'] = f"Seed_{run_idx}"
+        all_runs_data.append(run_ep_stats)
+        print(f"✅ 成功加载 {run_dir} (最大回合: {run_ep_stats['episode'].max()})")
+
+    if not all_runs_data:
+        return pd.DataFrame()
+
+    # 将所有 Seed 的数据合并成一个用来画 Error Bar 的大表
+    return pd.concat(all_runs_data, ignore_index=True)
 
 
 if __name__ == '__main__':
-    # 1. 提取合并数据
-    df_all = process_data()
+    df_all = process_multiple_runs()
 
     if df_all.empty:
-        print("没有读取到任何数据，请检查文件夹路径！")
+        print("❌ 提取到的数据为空，请检查路径是否正确！")
         exit()
 
-    print(f"数据处理完毕，共读取了 {len(df_all)} 个回合的数据。开始绘制高级学术图表...")
+    print(f"\n🎉 数据处理完毕！开始绘制跨越 {df_all['Run_ID'].nunique()} 个种子的 Error Bar 图表...")
 
-    # 2. 开始画图 (Seaborn 会自动帮我们处理阴影)
+    # ====== 3. 开始画图 (融合原版高级样式) ======
     sns.set_theme(style="whitegrid", font="SimHei")
-    fig, axes = plt.subplots(2, 1, figsize=(10, 12), dpi=300)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 10), dpi=300)
 
-    # ============ 图 1：平均等待时间 Error Bar ============
-    # errorbar='sd' 表示绘制标准差阴影；也可以换成 errorbar=('ci', 95) 绘制95%置信区间
-    sns.lineplot(
-        ax=axes[0],
-        data=df_all,
-        x='Episode',
-        y='Waiting Time (s)',
-        errorbar='sd',  # <=== 魔法在这里：自动画出 Error bar 阴影！
-        linewidth=2,
-        color='#9b59b6',  # 紫色系
-        label='MARL (Mean ± SD)'
-    )
-    axes[0].set_title('图 A：训练回合数 vs 系统平均等待时间', fontsize=15, fontweight='bold')
-    axes[0].set_xlabel('Number of Episodes (训练回合)', fontsize=12)
-    axes[0].set_ylabel('Waiting Time (seconds)', fontsize=12)
-    axes[0].legend()
+    # === 图 1: Episode vs Waiting Time ===
+    ax1 = axes[0]
+    # 散点：把所有 run 的真实原始波动值打上去（作为朦胧的底色）
+    sns.scatterplot(data=df_all, x='episode', y='system_total_waiting_time',
+                    color='gray', alpha=0.15, s=15, ax=ax1, label='Raw Data (各 Seed 原始波动)')
 
-    # ============ 图 2：排队长度 Error Bar ============
-    sns.lineplot(
-        ax=axes[1],
-        data=df_all,
-        x='Episode',
-        y='Queue Length',
-        errorbar='sd',
-        linewidth=2,
-        color='#3498db',  # 蓝色系
-        label='MARL (Mean ± SD)'
-    )
-    axes[1].set_title('图 B：训练回合数 vs 系统平均排队长度', fontsize=15, fontweight='bold')
-    axes[1].set_xlabel('Number of Episodes (训练回合)', fontsize=12)
-    axes[1].set_ylabel('Queue Length (vehicles)', fontsize=12)
-    axes[1].legend()
+    # 核心：利用 Seaborn 的 errorbar 自动计算多个 Seed 在同一 Episode 的均值和标准差！
+    sns.lineplot(data=df_all, x='episode', y='smoothed_waiting',
+                 errorbar='sd',  # 计算标准差作为阴影
+                 color=COLOR_WAIT, linewidth=2.5, ax=ax1,
+                 label=f'{EXP_NAME} (Mean ± SD across seeds)')
+
+    ax1.set_title(f'{EXP_NAME} 多种子汇总：回合数 vs 平均等待时间', fontsize=15, fontweight='bold')
+    ax1.set_xlabel('Number of Episodes (训练回合)', fontsize=12)
+    ax1.set_ylabel('Waiting Time (seconds)', fontsize=12)
+    ax1.legend()
+
+    # === 图 2: Episode vs Queue Length (Stopped Vehicles) ===
+    ax2 = axes[1]
+    sns.scatterplot(data=df_all, x='episode', y='system_total_stopped',
+                    color='gray', alpha=0.15, s=15, ax=ax2, label='Raw Data (各 Seed 原始波动)')
+
+    sns.lineplot(data=df_all, x='episode', y='smoothed_stopped',
+                 errorbar='sd',
+                 color=COLOR_QUEUE, linewidth=2.5, ax=ax2,
+                 label=f'{EXP_NAME} (Mean ± SD across seeds)')
+
+    ax2.set_title(f'{EXP_NAME} 多种子汇总：回合数 vs 平均排队长度', fontsize=15, fontweight='bold')
+    ax2.set_xlabel('Number of Episodes (训练回合)', fontsize=12)
+    ax2.set_ylabel('Queue Length (vehicles)', fontsize=12)
+    ax2.legend()
 
     plt.tight_layout()
-    plt.savefig('marl_errorbar_results.png', bbox_inches='tight')
-    plt.show()
-    print(" 绘制成功！请查看当前目录下的 marl_errorbar_results.png")
+
+    # 自动保存在脚本运行的当前目录下
+    save_name = f"aggregated_errorbar_{EXP_NAME.replace(' ', '_')}.png"
+    plt.savefig(save_name, bbox_inches='tight')
+    plt.close()
+
+    print(f"🔥 完美！高级学术对比图已保存至:\n👉 {os.path.abspath(save_name)}")
