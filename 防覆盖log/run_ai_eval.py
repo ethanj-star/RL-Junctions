@@ -1,4 +1,3 @@
-import gymnasium as gym
 from stable_baselines3 import PPO
 from sumo_rl import SumoEnvironment
 from envs.wrappers import ThreeJunctionCentralizedWrapper

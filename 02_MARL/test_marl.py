@@ -35,8 +35,8 @@ def run_marl_test():
 
     # 创建原生的 PettingZoo 多智能体并行环境 (开启 GUI 看动画)
     env = parallel_env(
-        net_file='SUMOroutes.net.xml',  # 注意检查路径，如果你的 test.py 在子文件夹里，这里要加 ../
-        route_file='traffic.rou.rou.xml',
+        net_file='../SUMOroutes.net.xml',  # 注意检查路径，如果你的 test.py 在子文件夹里，这里要加 ../
+        route_file='../traffic.rou.rou.xml',
         out_csv_name='logs/test_marl_output',
         use_gui=True,  # 开启可视化界面
         num_seconds=3600,
@@ -51,7 +51,7 @@ def run_marl_test():
     env = SB3CompatibilityWrapper(env)
 
     # 加载训练时保存的 VecNormalize 统计数据 (戴上眼镜)
-    norm_path = "saved_models/vec_normalize_marl.pkl"
+    norm_path = "../saved_models/vec_normalize_marl.pkl"
     if not os.path.exists(norm_path):
         print(f"找不到归一化文件: {norm_path}，AI 将无法理解环境！")
         return
