@@ -4,6 +4,19 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, VecEnvWrapper
 from sumo_rl import parallel_env
 import supersuit as ss
+import random
+import torch
+
+
+def run_marl_test():
+    # 加入这几行，保证每次测同一个模型，跑出的分数小数点都不差！
+    seed = 666
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    print(f"正在加载第 {RUN_IDX} 次 MARL 训练的环境和模型...")
+
 
 # ====== 1. 核心路径动态获取 (与 train_marl.py 保持同步) ======
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
