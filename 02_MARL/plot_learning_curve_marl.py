@@ -5,42 +5,42 @@ import glob
 import os
 import re
 
-# ====== 解决 Matplotlib 中文显示问题 ======
+# 解决 Matplotlib 中文显示问题
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
 
-# ====== 1. 核心路径动态配置 (修复版) ======
+# 核心路径动态配置
 # 获取当前脚本所在目录 (例如: 3JucRL/02_MARL)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 向上一级，获取根目录 (例如: 3JucRL)
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 
-# 指定你想画第几次 MARL 训练的图
-RUN_IDX = 1
+# ！！！！！每次更改 指定你想画第几次 MARL 训练的图
+RUN_IDX = 2
 # 现在统一去根目录下的 logs 里找数据！
 LOG_DIR = os.path.join(ROOT_DIR, 'logs', f'marl_run_{RUN_IDX}')
 
 
 def plot_marl_learning_curve():
-    print(f"正在读取 MARL 文件夹: \n👉 {LOG_DIR}")
+    print(f"正在读取 MARL 文件夹: \n {LOG_DIR}")
 
-    # 诊断 1: 检查文件夹到底存不存在
+    # 检查文件夹到底存不存在
     if not os.path.exists(LOG_DIR):
-        print("\n❌ 致命错误：找不到这个文件夹！请检查 RUN_IDX 是否正确。")
+        print("\n 错误：找不到这个文件夹！请检查 RUN_IDX 是否正确。")
         return
 
     # 抓取所有符合的 csv 文件
     csv_pattern = os.path.join(LOG_DIR, "*.csv")
     csv_files = glob.glob(csv_pattern)
 
-    # 【核心防御】：排除掉 test_marl.py 生成的测试日志，防止污染训练曲线
+    # 排除掉 test_marl.py 生成的测试日志，防止污染训练曲线
     csv_files = [f for f in csv_files if "test" not in os.path.basename(f)]
 
     if not csv_files:
-        print(f"❌ 未找到任何训练 CSV 文件，请检查路径: \n{LOG_DIR}")
+        print(f" 未找到任何训练 CSV 文件，请检查路径: \n{LOG_DIR}")
         return
 
-    # ====== 2. 读取并提取文件名中的 Episode ======
+    # 读取并提取文件名中的 Episode
     df_list = []
     for f in csv_files:
         basename = os.path.basename(f)
@@ -60,14 +60,14 @@ def plot_marl_learning_curve():
             print(f"解析文件 {basename} 时出错: {e}")
 
     if not df_list:
-        print("❌ 解析失败，提取到的数据为空！")
+        print(" 解析失败，提取到的数据为空！")
         return
 
     # 把所有小碎片数据合并成一个大表
     df_all = pd.concat(df_list, ignore_index=True)
-    print(f"✅ 成功解析 {len(df_list)} 个碎片文件，最大训练回合数为: {df_all['episode'].max()}")
+    print(f" 成功解析 {len(df_list)} 个碎片文件，最大训练回合数为: {df_all['episode'].max()}")
 
-    # ====== 3. 数据聚合与平滑计算 ======
+    # 数据聚合与平滑计算
     # 保持和单智能体完全一致的度量指标
     agg_dict = {
         'system_total_waiting_time': 'mean',
@@ -91,11 +91,11 @@ def plot_marl_learning_curve():
     episode_stats['std_waiting'] = episode_stats['system_total_waiting_time'].rolling(window=window_size, min_periods=1).std().fillna(0)
     episode_stats['std_stopped'] = episode_stats['system_total_stopped'].rolling(window=window_size, min_periods=1).std().fillna(0)
 
-    # ====== 4. 开始画图 (论文同款风格) ======
+    # 开始画图
     sns.set_theme(style="whitegrid", font="SimHei")
     fig, axes = plt.subplots(2, 1, figsize=(10, 10))
 
-    # === 图 1: Episode vs Waiting Time ===
+    # 图 1: Episode vs Waiting Time
     ax1 = axes[0]
     sns.scatterplot(data=episode_stats, x='episode', y='system_total_waiting_time',
                     color='gray', alpha=0.3, s=25, ax=ax1, label='Raw Data (各进程汇总原始值)')
@@ -112,7 +112,7 @@ def plot_marl_learning_curve():
     ax1.set_ylabel('Waiting Time (seconds)', fontsize=12)
     ax1.legend()
 
-    # === 图 2: Episode vs Queue Length (Stopped Vehicles) ===
+    # 图 2: Episode vs Queue Length (Stopped Vehicles)
     ax2 = axes[1]
     sns.scatterplot(data=episode_stats, x='episode', y='system_total_stopped',
                     color='gray', alpha=0.3, s=25, ax=ax2, label='Raw Data (各进程汇总原始值)')
@@ -136,7 +136,7 @@ def plot_marl_learning_curve():
     plt.savefig(save_path, dpi=300)
     plt.close()
 
-    print(f"🎉 绘图完成！图片已自动保存至:\n👉 {save_path}")
+    print(f" 绘图完成！图片已自动保存至:\n {save_path}")
 
 if __name__ == "__main__":
     plot_marl_learning_curve()

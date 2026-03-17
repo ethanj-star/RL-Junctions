@@ -12,12 +12,15 @@ plt.rcParams['axes.unicode_minus'] = False
 # ================= 1. 核心配置区 =================
 # 填入你多次训练 (不同 Seed 或 Run) 的 logs 文件夹绝对/相对路径
 RUN_DIRS = [
-    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\marl_run_1",
-    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\marl_run_2"
+    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\single_queue_run_1",
+    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\single_queue_run_2",
+r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\single_queue_run_3"
 ]
 
-# 实验名称（将显示在图例中）
-EXP_NAME = "MARL PPO"  # 如果画单智能体，改为 "Single-Agent PPO"
+# 实验名称（将显示在图例中）multiagent
+#EXP_NAME = "MARL PPO"
+# 如果画单智能体，改为 "Single-Agent PPO"
+EXP_NAME = "Single-Agent PPO"
 
 # 曲线颜色配置 (保持和之前一致)
 # MARL 推荐色: 等待时间 '#e74c3c'(红), 排队长度 '#2ecc71'(绿)
@@ -35,7 +38,7 @@ def process_multiple_runs():
 
     for run_idx, run_dir in enumerate(RUN_DIRS):
         if not os.path.exists(run_dir):
-            print(f"❌ 警告：找不到文件夹 {run_dir}，已跳过。")
+            print(f" 警告：找不到文件夹 {run_dir}，已跳过。")
             continue
 
         # 抓取当前 Seed 文件夹下所有的 CSV
@@ -80,7 +83,7 @@ def process_multiple_runs():
         # 3. 打上身份标签，证明它属于哪个 Seed
         run_ep_stats['Run_ID'] = f"Seed_{run_idx}"
         all_runs_data.append(run_ep_stats)
-        print(f"✅ 成功加载 {run_dir} (最大回合: {run_ep_stats['episode'].max()})")
+        print(f" 成功加载 {run_dir} (最大回合: {run_ep_stats['episode'].max()})")
 
     if not all_runs_data:
         return pd.DataFrame()
@@ -93,10 +96,10 @@ if __name__ == '__main__':
     df_all = process_multiple_runs()
 
     if df_all.empty:
-        print("❌ 提取到的数据为空，请检查路径是否正确！")
+        print(" 提取到的数据为空，请检查路径是否正确！")
         exit()
 
-    print(f"\n🎉 数据处理完毕！开始绘制跨越 {df_all['Run_ID'].nunique()} 个种子的 Error Bar 图表...")
+    print(f"\n 数据处理完毕！开始绘制跨越 {df_all['Run_ID'].nunique()} 个种子的 Error Bar 图表...")
 
     # ====== 3. 开始画图 (融合原版高级样式) ======
     sns.set_theme(style="whitegrid", font="SimHei")
@@ -141,4 +144,4 @@ if __name__ == '__main__':
     plt.savefig(save_name, bbox_inches='tight')
     plt.close()
 
-    print(f"🔥 完美！高级学术对比图已保存至:\n👉 {os.path.abspath(save_name)}")
+    print(f" 完美！高级学术对比图已保存至:\n {os.path.abspath(save_name)}")

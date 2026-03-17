@@ -9,8 +9,8 @@ import torch
 
 
 def run_marl_test():
-    # 加入这几行，保证每次测同一个模型，跑出的分数小数点都不差！
-    seed = 666
+    # 加入这几行，保证每次测同一个模型，跑出的分数小数点都不差！!!!!每次更改seed
+    seed = 868
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -18,14 +18,14 @@ def run_marl_test():
     print(f"正在加载第 {RUN_IDX} 次 MARL 训练的环境和模型...")
 
 
-# ====== 1. 核心路径动态获取 (与 train_marl.py 保持同步) ======
+# 核心路径动态获取 (与 train_marl.py 保持同步)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
 route_path = os.path.join(ROOT_DIR, 'traffic.rou.rou.xml')
 
-# ====== 2. 手动指定你要测试哪一次训练的模型 ======
+# ！！！！！每次更改 手动指定你要测试哪一次训练的模型
 # 比如你想测试第 1 次跑出来的模型，就写 1
 RUN_IDX = 1
 RUN_DIR = os.path.join(ROOT_DIR, 'saved_models', f'marl_run_{RUN_IDX}')
@@ -40,7 +40,7 @@ VEC_NORM_PATH = os.path.join(RUN_DIR, 'vec_normalize_marl.pkl')
 # MODEL_PATH = os.path.join(RUN_DIR, 'checkpoints', 'rl_model_300000_steps.zip')
 
 
-# ====== 依然需要这个魔法补丁来处理 API 版本冲突 ======
+# 魔法补丁来处理 API 版本冲突
 class SB3CompatibilityWrapper(VecEnvWrapper):
     def __init__(self, venv):
         super().__init__(venv)
@@ -85,7 +85,7 @@ def run_marl_test():
 
     # 加载训练时保存的 VecNormalize 统计数据 (戴上眼镜)
     if not os.path.exists(VEC_NORM_PATH):
-        print(f"❌ 找不到归一化文件: {VEC_NORM_PATH}，AI 将无法理解环境！")
+        print(f" 找不到归一化文件: {VEC_NORM_PATH}，AI 将无法理解环境！")
         return
 
     env = VecNormalize.load(VEC_NORM_PATH, env)
@@ -96,11 +96,11 @@ def run_marl_test():
 
     # 5. 加载你训练好的 MARL 模型
     if not os.path.exists(MODEL_PATH):
-        print(f"❌ 找不到模型文件: {MODEL_PATH}，请检查 RUN_IDX 编号或文件路径。")
+        print(f" 找不到模型文件: {MODEL_PATH}，请检查 RUN_IDX 编号或文件路径。")
         return
 
     model = PPO.load(MODEL_PATH)
-    print("✅ 模型和归一化参数加载成功！开始仿真测试...")
+    print(" 模型和归一化参数加载成功！开始仿真测试...")
 
     # 6. 运行交互循环
     obs = env.reset()
@@ -122,7 +122,7 @@ def run_marl_test():
         if np.any(dones):
             break
 
-    print(f"\n🎉 测试结束！")
+    print(f"\n 测试结束！")
     print(f"总共运行控制步数: {step}")
     print(f"3个路口总累计奖励 (排队越少负数越小): {total_reward:.2f}")
 

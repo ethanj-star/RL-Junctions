@@ -10,7 +10,7 @@ plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode M
 plt.rcParams['axes.unicode_minus'] = False
 
 # 核心路径配置 (绝对路径最稳妥)  # Core path configuration (Absolute path is the most reliable)
-RUN_IDX = 2  # 你想画第几次的图！！！！每次修改  # Which run to plot!!!! Modify this every time
+RUN_IDX = 3  # 你想画第几次的图！！！！每次修改  # Which run to plot!!!! Modify this every time
 LOG_DIR = rf"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\single_queue_run_{RUN_IDX}"
 
 
@@ -28,7 +28,8 @@ def plot_sumorl_learning_curve():
     # 读取并提取文件名中的 Episode  # Read and extract Episode from filename
     df_list = []    #创建一个空列表，用来装下面读取出来的所有零碎数据表。  # Create an empty list to store all the fragmented dataframes read below.
     for f in csv_files:
-        basename = os.path.basename(f)  # 长长的一串路径用basename砍掉，只保留纯文件名本身，例如: output_0_conn0_ep1.csv  # Strip the long path with basename, keeping only the pure filename itself, e.g.: output_0_conn0_ep1.csv
+        basename = os.path.basename(f)  # 长长的一串路径用basename砍掉，只保留纯文件名本身，例如: output_0_conn0_ep1.csv
+        # Strip the long path with basename, keeping only the pure filename itself, e.g.: output_0_conn0_ep1.csv
         try:
             # 使用正则表达式提取 'ep' 后面的数字  # Use regular expression to extract the number after 'ep'
             match = re.search(r'ep(\d+)\.csv', basename)
@@ -50,7 +51,9 @@ def plot_sumorl_learning_curve():
     print(f" 成功解析 {len(csv_files)} 个碎片文件，最大训练回合数为: {df_all['episode'].max()}")
 
     # 把并行训练的四次数据合并，然后平滑计算  # Merge data from the 4 parallel training runs, then calculate smoothing
-    #用总等待时间避免掩盖局部死锁（极端值），总排队车数与queue奖励函数负相关，更明显看出了奖励优化  # Use total waiting time to avoid hiding local deadlocks (extreme values); total stopped vehicles is negatively correlated with queue reward function, making reward optimization more obvious
+    #用总等待时间避免掩盖局部死锁（极端值），总排队车数与queue奖励函数负相关，更明显看出了奖励优化
+    # Use total waiting time to avoid hiding local deadlocks (extreme values); total stopped vehicles is
+    # negatively correlated with queue reward function, making reward optimization more obvious
     agg_dict = {
         'system_total_waiting_time': 'mean',
         'system_total_stopped': 'mean'

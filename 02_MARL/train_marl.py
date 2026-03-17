@@ -8,14 +8,15 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize, VecEnvWra
 from sumo_rl import parallel_env
 import supersuit as ss
 
-# ====== 1. 核心路径动态获取 (防迷路) ======
+# 路径动态获取 (Dynamic path acquisition)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
-
+# 在获取的路径上加上文件名，且不用+可以自动处理跨平台操作系统的路径斜杠问题。
+# (Append filenames using os.path.join to handle cross-platform slash issues automatically instead of using '+')
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
 route_path = os.path.join(ROOT_DIR, 'traffic.rou.rou.xml')
 
-# ====== 2. 自动编号神器：寻找下一个可用的 Run 编号 ======
+# 自动编号：寻找下一个可用的 Run 编号（Auto-numbering tool）
 def get_next_run_number(base_dir, prefix="marl_run_"):
     """扫描目录，找到最大的 run 编号并 +1"""
     if not os.path.exists(base_dir):
@@ -24,6 +25,8 @@ def get_next_run_number(base_dir, prefix="marl_run_"):
     for folder in os.listdir(base_dir):
         if folder.startswith(prefix):
             try:
+                # 提取数字部分，比如 'marl_run_3' 提取出 3
+                # (Extract the numeric part, e.g., get 3 from 'marl_run_3')
                 num = int(folder.replace(prefix, ""))
                 existing_runs.append(num)
             except ValueError:
@@ -31,13 +34,13 @@ def get_next_run_number(base_dir, prefix="marl_run_"):
     return max(existing_runs) + 1 if existing_runs else 1
 
 
-# ====== 魔法补丁：解决 5 个返回值与 4 个返回值的 API 世纪冲突 ======
+# 补丁：解决 5 个返回值与 4 个返回值的 API 世纪冲突  （solve API conflict of 5 return or 4 return）
 class SB3CompatibilityWrapper(VecEnvWrapper):
     def __init__(self, venv):
         super().__init__(venv)
 
     def reset(self):
-        # 如果新版环境返回 (obs, info) 两个值，我们只取 obs 喂给老实巴交的 SB3
+        # 如果新版环境返回 (obs, info) 两个值，我们只取 obs 喂给老实的 SB3
         obs = self.venv.reset()
         if isinstance(obs, tuple) and len(obs) == 2:
             return obs[0]
@@ -64,36 +67,38 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
 if __name__ == '__main__':
     print("正在初始化多智能体 SUMO 环境...")
 
-    #第一道保险：固定全局随机种子，拒绝玄学炼丹
-    seed = 666
+    #固定全局随机种子!!!!每次更改seed Fix global random seed
+    seed = 868
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    # ================== 核心修改：动态分配本次实验的专属路径 ==================
+    # 动态分配本次实验的专属路径(Dynamically allocate paths for this training run)
     saved_models_base = os.path.join(ROOT_DIR, 'saved_models')
     logs_base = os.path.join(ROOT_DIR, 'logs')
     os.makedirs(saved_models_base, exist_ok=True)
     os.makedirs(logs_base, exist_ok=True)
 
-    # 自动计算本次是 MARL 的第几次运行！
+    # 自动计算本次是 MARL 的第几次运行(Automatically calculate the current run number)
     run_idx = get_next_run_number(saved_models_base, "marl_run_")
-    print(f"\n🚀 自动检测到历史记录，本次 MARL 分配为: [ 第 {run_idx} 次运行 ]")
+    print(f"\n 自动检测到历史记录，本次 MARL 分配为: [ 第 {run_idx} 次运行 ]")
 
-    # 创建本次运行的专属模型保存文件夹
+    # 创建本次运行的专属模型保存文件夹(Create an exclusive model save folder for this run based on the ID)
     run_save_dir = os.path.join(saved_models_base, f'marl_run_{run_idx}')
     os.makedirs(run_save_dir, exist_ok=True)
 
-    # 创建本次运行的专属 CSV 日志文件夹
+    # 创建本次运行的专属 CSV 日志文件夹(Create an exclusive CSV log folder for this run based on the ID)
     run_csv_dir = os.path.join(logs_base, f'marl_run_{run_idx}')
     os.makedirs(run_csv_dir, exist_ok=True)
     csv_base_path = os.path.join(run_csv_dir, 'marl_output')
 
-    # Tensorboard 总目录依然保持不变，方便把多条曲线画在同一张图里对比
+    # Tensorboard 总目录依然保持不变，localhost方便把多条曲线画在同一张图里对比
+    #(Keep the main Tensorboard directory unchanged to easily plot multiple curves on the same graph on localhost)
     tensorboard_log_path = os.path.join(logs_base, 'ppo_marl_tb')
-    # =========================================================================
 
     # 1. 创建原生的 PettingZoo 多智能体并行环境
+    #`sumo-rl` 库的底层逻辑是：它会去解析你传入的 `SUMOroutes.net.xml` 文件。
+    # 地图里有几个配置了动态红绿灯的交叉路口，它就会自动生成几个 Agent。
     env = parallel_env(
         net_file=net_path,
         route_file=route_path,
@@ -107,7 +112,8 @@ if __name__ == '__main__':
 
     #PettingZoo 确实不懂 SB3，但我们用 SuperSuit 把它强行“翻译”成了 SB3 的形状。既然它已经变成了 SB3 的形状，
     # 我们后续给它打补丁、加护甲（VecNormalize）、做监控（VecMonitor），就全都要依赖 stable_baselines3 提供的工具了。
-    # 2. SuperSuit 魔法转换
+
+    # 2. SuperSuit 魔法转换  1 个包含 3 个 Agent 的多智能体环境，伪装成 3 个并行的单智能体环境。
     env = ss.pettingzoo_env_to_vec_env_v1(env)
 
     # 3. 拼接成向量环境 (单核，但自带3路口并行)
@@ -120,6 +126,9 @@ if __name__ == '__main__':
 
     # 4. 套上魔法补丁，把5个输入变成4个
     env = SB3CompatibilityWrapper(env)
+
+    # 获取并打印底层真实存在的 Agent ID  # Get and print the actual underlying Agent IDs
+    #print("当前环境中的 Agent 列表 (List of Agents in current env)：", env.venv.venv.venv.possible_agents)
 
     # 5. 包装 Monitor
     #负责“记账”的监控器。它盯着你的环境，每当一个回合（Episode）结束时，它把这回合走了多少步、拿了多少分记录下来，然后汇报给SB3。
@@ -134,7 +143,7 @@ if __name__ == '__main__':
     # 确保环境的动作空间也被固定种子
     #env.seed(seed)
 
-    # 7. 创建 PPO 模型
+    # 7. 参数共享的PPO 模型  create PPO model, shared with parameters
     model = PPO(
         "MlpPolicy",  # 策略网络类型：采用多层感知机（Multi-Layer Perceptron）提取低维状态特征
         env,
@@ -151,7 +160,7 @@ if __name__ == '__main__':
         tensorboard_log=tensorboard_log_path  # <--- 统一定位到 TB 日志主目录
     )
 
-    # ====== 第二道保险：定时自动存档 (Checkpoint) ======
+    # 第二道保险：定时自动存档 (Checkpoint)
     # 每隔 50000 步，自动把模型备份到当前专属的 run 文件夹里
     checkpoint_callback = CheckpointCallback(
         save_freq=50000,
@@ -161,15 +170,15 @@ if __name__ == '__main__':
 
     print("环境就绪！SB3 正在接收多智能体数据流。开始训练...")
     # tb_log_name 会在 Tensorboard 目录下自动新建 "run_1", "run_2" 子文件夹
-    model.learn(total_timesteps=10000, callback=checkpoint_callback, tb_log_name=f"run_{run_idx}")
+    model.learn(total_timesteps=500000, callback=checkpoint_callback, tb_log_name=f"run_{run_idx}")
 
-    # 8. 保存模型和归一化参数到专属文件夹
+    # 8. 保存模型和归一化参数到专属文件夹  (save models)
     model.save(os.path.join(run_save_dir, "ppo_marl_model"))
     #把所有传给 AI 的状态和奖励，都强行缩放到了一个非常小且标准的范围内（通常是 均值为 0，方差为 1）。
     #和训练时候一样，测试也要归一化
     env.save(os.path.join(run_save_dir, "vec_normalize_marl.pkl"))
 
     env.close()
-    print(f"\n✅ 多智能体训练完成！所有产出均已安全保存至专属目录:")
+    print(f"\n 多智能体训练完成！所有产出均已安全保存至专属目录:")
     print(f"模型与断点: {run_save_dir}")
     print(f"日志文件: {run_csv_dir}")
