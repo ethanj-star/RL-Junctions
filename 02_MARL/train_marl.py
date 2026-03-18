@@ -67,8 +67,8 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
 if __name__ == '__main__':
     print("正在初始化多智能体 SUMO 环境...")
 
-    #固定全局随机种子!!!!每次更改seed Fix global random seed
-    seed = 868
+    #固定全局随机种子                              !!!!每次更改seed Fix global random seed
+    seed = 8848
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

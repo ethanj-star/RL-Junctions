@@ -4,23 +4,24 @@ import seaborn as sns
 import glob
 import os
 import re
+import matplotlib.ticker as ticker
 
 # ====== 解决 Matplotlib 中文显示问题 ======
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
 
 # ================= 1. 核心配置区 =================
-# 填入你多次训练 (不同 Seed 或 Run) 的 logs 文件夹绝对/相对路径
+# 填入你多次训练 (不同 Seed 或 Run) 的 logs 文件夹绝对/相对路径             ！！！！！！！！！！修改
 RUN_DIRS = [
-    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\single_queue_run_1",
-    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\single_queue_run_2",
-r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\single_queue_run_3"
+    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\marl_run_1",
+    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\marl_run_2",
+    r"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\marl_run_3"
 ]
 
-# 实验名称（将显示在图例中）multiagent
-#EXP_NAME = "MARL PPO"
+# 实验名称（将显示在图例中）multiagent             ！！！！！！！！！！修改
+EXP_NAME = "MARL PPO"
 # 如果画单智能体，改为 "Single-Agent PPO"
-EXP_NAME = "Single-Agent PPO"
+#EXP_NAME = "Single-Agent PPO"
 
 # 曲线颜色配置 (保持和之前一致)
 # MARL 推荐色: 等待时间 '#e74c3c'(红), 排队长度 '#2ecc71'(绿)
@@ -117,10 +118,15 @@ if __name__ == '__main__':
                  color=COLOR_WAIT, linewidth=2.5, ax=ax1,
                  label=f'{EXP_NAME} (Mean ± SD across seeds)')
 
+    # ====== 🌟 新增：强制 Y 轴每隔 25 画一个刻度 ======
+    ax1.yaxis.set_major_locator(ticker.MultipleLocator(25))
+
     ax1.set_title(f'{EXP_NAME} 多种子汇总：回合数 vs 平均等待时间', fontsize=15, fontweight='bold')
     ax1.set_xlabel('Number of Episodes (训练回合)', fontsize=12)
     ax1.set_ylabel('Waiting Time (seconds)', fontsize=12)
     ax1.legend()
+    ax1.set_xlim([0, 220])  # 强制 X 轴范围为 0 到 220 回合
+    ax1.set_ylim([80, 320])  # 强制 Y 轴范围为 80 到 320 秒
 
     # === 图 2: Episode vs Queue Length (Stopped Vehicles) ===
     ax2 = axes[1]
@@ -136,6 +142,8 @@ if __name__ == '__main__':
     ax2.set_xlabel('Number of Episodes (训练回合)', fontsize=12)
     ax2.set_ylabel('Queue Length (vehicles)', fontsize=12)
     ax2.legend()
+    ax2.set_xlim([0, 220])
+    ax2.set_ylim([15, 35])
 
     plt.tight_layout()
 

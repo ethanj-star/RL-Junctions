@@ -10,7 +10,7 @@ plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode M
 plt.rcParams['axes.unicode_minus'] = False
 
 # 核心路径配置 (绝对路径最稳妥)  # Core path configuration (Absolute path is the most reliable)
-RUN_IDX = 3  # 你想画第几次的图！！！！每次修改  # Which run to plot!!!! Modify this every time
+RUN_IDX = 1  # 你想画第几次的图！！！！每次修改  # Which run to plot         !!!! Modify this every time
 LOG_DIR = rf"C:\Users\DJI\Desktop\dissertation\3JucRL\logs\single_queue_run_{RUN_IDX}"
 
 
@@ -64,10 +64,10 @@ def plot_sumorl_learning_curve():
     # 按 Episode 分组，计算【平均等待时间】和【平均排队长度】  # Group by Episode to calculate [average waiting time] and [average queue length]
     episode_stats = df_all.groupby('episode').agg(agg_dict).reset_index()
 
-    # 按照 episode 从小到大排序 (非常重要，防止曲线乱飞)  # Sort by episode in ascending order (very important to prevent erratic curves)
+    # 按照 episode 从小到大排序 (非常重要，防止曲线乱飞)  # Sort by episode in ascending order to prevent erratic curves
     episode_stats = episode_stats.sort_values(by='episode').reset_index(drop=True)
 
-    # 平滑处理代码 (Window Size 推荐 5 到 10)  # Smoothing processing code (Window Size 5 to 10 recommended)
+    # 平滑处理代码  # Smoothing processing code
     window_size = 5
     episode_stats['smoothed_waiting'] = episode_stats['system_total_waiting_time'].rolling(window=window_size,
                                                                                            min_periods=1).mean()
