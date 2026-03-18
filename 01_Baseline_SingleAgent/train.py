@@ -54,7 +54,7 @@ def make_env(rank, seed, csv_base_path):
 if __name__ == '__main__':
 
     # 固定全局随机种子 （！！！每次运行修改记录） (Fix global random seed (!!! modify record each run))
-    seed = 8848
+    seed = 868
     random.seed(seed)             # Python 的基础随机 (Python's base random)
     np.random.seed(seed)          # NumPy 的数学计算随机 (NumPy's mathematical random)
     torch.manual_seed(seed)       # PyTorch的随机 (PyTorch's random)
