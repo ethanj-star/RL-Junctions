@@ -66,43 +66,29 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
 
 
 
-# 新增：基于潜力的奖励塑形 (Potential-Based Reward)
+# 新增：差分奖励/协同全局奖励 (Difference Reward)
+def difference_reward(traffic_signal):
+    """
+    使智能体不仅关注自身路口的拥堵，还关注全路网的拥堵情况。
+    打破多智能体各自为战的“自私陷阱”。
+    """
+    # 1. 获取全局系统表现 G(z)：全网所有路口的排队总和
+    global_queue = 0
+    # 动态遍历traffic_signals里面的 A0、B0、C0 等所有路口的控制对象，累加它们的排队长度
+    for ts_id in traffic_signal.env.traffic_signals:
+        global_queue += traffic_signal.env.traffic_signals[ts_id].get_total_queued()
 
-def pbrs_reward(traffic_signal):
+    # 2. 获取自己路口的排队长度，每个agent会依次在运行到这里时和总排队对比
+    local_queue = traffic_signal.get_total_queued()
 
-    # Φ(s, a) = QLa / ∑QL
+    # 3. 差分/协同融合：不仅惩罚自己路口的排队，还要加上全网总排队的惩罚
+    # 强迫 AI 意识到：如果全网大塞车，就算我门前清空了，我也要扣分！
+    alpha = 0.8  # 自身路口的权重
+    beta = 0.2  # 全网大局的权重
 
-    # 1. 计算基础奖励 (Base Reward: sum up every queued cars)
-    total_queue = traffic_signal.get_total_queued()
-    base_reward = -total_queue
+    collaborative_reward = -(alpha * local_queue) - (beta * global_queue)
 
-    # 2. 获取信号灯状态 get traffic light state
-    current_light_state = traffic_signal.sumo.trafficlight.getRedYellowGreenState(traffic_signal.id)
-    #if lane's light == green and yellow, return and sum up all waiting cars
-    active_phase_queue = 0
-    for i, lane in enumerate(traffic_signal.lanes):
-        # 如果这个车道当前是绿灯 (G/g) 或黄灯 (Y/y)
-        if current_light_state[i] in ('G', 'g', 'y', 'Y'):
-            active_phase_queue += traffic_signal.sumo.lane.getLastStepHaltingNumber(lane)  #返回所有静止的车 return every paused cars
-
-    # 计算排队占比 (加上 1e-6 防止分母为 0 报错)  calculate potential Phi(s, a)
-    phi_current = active_phase_queue / (total_queue + 1e-6)
-
-    # 3. 提取上一步的势能 Phi(s)  initialise last_potential
-    if not hasattr(traffic_signal, 'last_potential'):
-        traffic_signal.last_potential = 0.0
-
-    # 4. 计算最终的塑形奖励 F
-    gamma = 0.99  # 折扣因子
-    #势能差计算，排队的车越多，说明本次绿灯行动越有意义，减去上一步的势能得到势能差  diff = potential - late potential
-    shaping_reward = (gamma * phi_current) - traffic_signal.last_potential
-    # 更新记忆，为下一步计算做准备  update last_potential memory
-    traffic_signal.last_potential = phi_current
-
-    # 5. 组合最终奖励: R' = R + (Beta * F)  calculate final reward
-    beta = 100.0
-    final_reward = base_reward + (beta * shaping_reward)
-    return final_reward / 100.0   #加上静态缩放，弥补关闭奖励归一化以后的梯度更新锁死。/ 100 to normalize
+    return collaborative_reward
 
 
 if __name__ == '__main__':
@@ -146,7 +132,7 @@ if __name__ == '__main__':
         out_csv_name=csv_base_path,  # <--- 使用动态生成的CSV日志路径
         use_gui=False,
         num_seconds=3600,
-        reward_fn=pbrs_reward  # <==== 【修改点】：使用新增的 PBRS 奖励函数
+        reward_fn=difference_reward  # <==== 【修改点】：调用我们刚刚写的差分/协同奖励函数
         # Pressure = 驶入车道的车辆数-驶出车道的车辆数
         # 不写默认调用diff-waiting-time（等待时间差）的函数。但是不适合MARL，因为不同agent会互相干扰
     )
@@ -179,7 +165,7 @@ if __name__ == '__main__':
     # norm_obs=True（状态归一化） 路况数据（比如 0~150 的排队长度，0~1 的红绿灯相位）全部按比例压缩到均值为 0，方差为 1 的小范围区间内。
     # norm_reward=True（奖励归一化）把极其夸张的得分（比如发生死锁时扣 9000 分，通畅时扣 10 分）同样压缩成平缓的小数（比如 -2.5 到 -0.1）。
     # clip_obs=10.（状态极值裁剪）即使归一化之后，如果遇到罕见的变态数据，计算出来的值超过了 10 或者低于 -10，强行把它一刀切，最大只准是 10
-    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.)
+    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
 
     # 确保环境的动作空间也被固定种子
     # env.seed(seed)
@@ -211,7 +197,7 @@ if __name__ == '__main__':
 
     print("环境就绪！SB3 正在接收多智能体数据流。开始训练...")
     # tb_log_name 会在 Tensorboard 目录下自动新建 "run_1", "run_2" 子文件夹
-    model.learn(total_timesteps=800000, callback=checkpoint_callback, tb_log_name=f"run_{run_idx}")
+    model.learn(total_timesteps=300000, callback=checkpoint_callback, tb_log_name=f"run_{run_idx}")
 
     # 8. 保存模型和归一化参数到专属文件夹  (save models)
     model.save(os.path.join(run_save_dir, "ppo_marl_model"))
