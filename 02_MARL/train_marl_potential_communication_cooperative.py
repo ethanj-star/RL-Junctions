@@ -8,8 +8,10 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize, VecEnvWra
 from sumo_rl import parallel_env
 import supersuit as ss
 from typing import Callable
-# 终极修复：直接导入模块，拒绝 os.system 的静默失败
+
+# 【终极修复：直接导入模块，拒绝 os.system 的静默失败】
 from generate_Random_Traffic import generate_route_file
+
 #  新增导入：用于重写观察空间实现通信 rewrite the observation space to implement communication
 from sumo_rl.environment.observations import DefaultObservationFunction
 from gymnasium import spaces
@@ -79,41 +81,62 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
         return results
 
 
-# 基于潜力的奖励塑形 (Potential-Based Reward)
+# 新增：带空间合作机制的基于潜力奖励塑形 (Cooperative Potential-Based Reward)
 def pbrs_reward(traffic_signal):
-    # 1. 计算基础奖励 (Base Reward: sum up every queued cars)
-    total_queue = traffic_signal.get_total_queued()
-    base_reward = -total_queue
+    # ==========================================
+    # 🌟 核心革新：从“自私”走向“利他”
+    # ==========================================
+    # 1. 计算自身的排队惩罚
+    own_queue = traffic_signal.get_total_queued()
 
-    # 2. 获取信号灯状态 (2. Get traffic light state)
+    # 2. 计算邻居的排队惩罚 (空间合作机制)
+    neighbor_queue = 0
+    my_id = traffic_signal.id
+    neighbors = NEIGHBOR_MAP.get(my_id, [None, None])
+
+    # 合作系数 alpha (0.5 代表把邻居一半的痛苦当做自己的痛苦)
+    # 这个值如果在 0.1~0.3，偏向利己；如果在 0.5~1.0，高度利他。
+    alpha = 0.2
+
+    for neighbor_id in neighbors:
+        if neighbor_id is not None:
+            # 拿到邻居路口的实例对象
+            neighbor_ts = traffic_signal.env.traffic_signals[neighbor_id]
+            # 累加邻居的排队长度
+            neighbor_queue += neighbor_ts.get_total_queued()
+
+    # 计算全新的合作型基础奖励！
+    base_reward = - (own_queue + alpha * neighbor_queue)
+    # ==========================================
+
+    # 3. 获取信号灯状态计算势能
+    # (注意：势能计算依然只看自己，因为自己的红绿灯只能直接决定自己路口的绿灯比例)
     current_light_state = traffic_signal.sumo.trafficlight.getRedYellowGreenState(traffic_signal.id)
     active_phase_queue = 0
     for i, lane in enumerate(traffic_signal.lanes):
         if current_light_state[i] in ('G', 'g', 'y', 'Y'):
             active_phase_queue += traffic_signal.sumo.lane.getLastStepHaltingNumber(lane)
 
-    # 计算排队占比 (Calculate queue ratio)
-    phi_current = active_phase_queue / (total_queue + 1e-6)
+    # 计算排队占比 (分母使用自己的排队数)
+    phi_current = active_phase_queue / (own_queue + 1e-6)
 
-    # 3. 提取上一步的势能 (处理跨回合清零)
-    # 使用 getattr 防御性获取，并用 <= delta_time 完美捕获第一步
+    # 4. 提取上一步的势能 (处理跨回合清零)
     current_step = getattr(traffic_signal.env, "sim_step", 0)
     delta_time = getattr(traffic_signal.env, "delta_time", 5)
     is_new_episode = current_step <= delta_time
 
     if not hasattr(traffic_signal, 'last_potential') or is_new_episode:
-        # 如果是第一步，让记忆直接等于当前状态（不产生任何差值）
         traffic_signal.last_potential = phi_current
-        shaping_reward = 0.0  # 第一步没有状态转移，强行把势能奖金归零
+        shaping_reward = 0.0
     else:
-        # 计算最终的塑形奖励 F ( Calculate the final shaping reward F)
         gamma = 0.99
         shaping_reward = (gamma * phi_current) - traffic_signal.last_potential
         traffic_signal.last_potential = phi_current
 
-    # 5. 组合最终奖励 (5. Combine the final reward)
+    # 5. 组合最终奖励 (组合合作基础奖励与局部势能奖励)
     beta = 100.0
     final_reward = base_reward + (beta * shaping_reward)
+
     return final_reward / 100.0
 
 

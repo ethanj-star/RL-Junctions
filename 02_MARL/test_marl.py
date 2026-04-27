@@ -7,33 +7,24 @@ import supersuit as ss
 import random
 import torch
 
-
-def run_marl_test():
-    # 加入这几行，保证每次测同一个模型，跑出的分数小数点都不差！!!!!每次更改seed
-    seed = 868
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    print(f"正在加载第 {RUN_IDX} 次 MARL 训练的环境和模型...")
-
-
 # 核心路径动态获取 (与 train_marl.py 保持同步)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
-route_path = os.path.join(ROOT_DIR, 'traffic.rou.rou.xml')
+# 【修改1：换交通流】对接 8 向泊松随机车流
+route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
 # ！！！！！每次更改 手动指定你要测试哪一次训练的模型
 # 比如你想测试第 1 次跑出来的模型，就写 1
-RUN_IDX = 1
+RUN_IDX = 15
 RUN_DIR = os.path.join(ROOT_DIR, 'saved_models', f'marl_run_{RUN_IDX}')
 LOG_DIR = os.path.join(ROOT_DIR, 'logs', f'marl_run_{RUN_IDX}')
 
 # 默认加载训练结束时保存的最终模型
 MODEL_PATH = os.path.join(RUN_DIR, 'ppo_marl_model.zip')
 VEC_NORM_PATH = os.path.join(RUN_DIR, 'vec_normalize_marl.pkl')
+
 
 # 【高级玩法】：如果你不想测最终模型，而是想测训练到一半的某个 Checkpoint (比如 300000 步)
 # 请取消下面这行代码的注释，并修改对应的步数：
@@ -46,6 +37,10 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
         super().__init__(venv)
 
     def reset(self):
+        # 【修改2：参数对齐】测试时也必须重新掷骰子生成新考卷，验证真正的鲁棒性
+        print("\n🔄 测试环境重置：正在调用脚本生成全新泊松随机交通流...")
+        os.system("python generate_poisson_traffic.py")
+
         obs = self.venv.reset()
         if isinstance(obs, tuple) and len(obs) == 2:
             return obs[0]
@@ -64,16 +59,23 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
 
 
 def run_marl_test():
+    # 加入这几行，保证每次测同一个模型，跑出的分数小数点都不差！        !!!!每次更改seed
+    seed = 8848
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
     print(f"正在加载第 {RUN_IDX} 次 MARL 训练的环境和模型...")
 
     # 创建原生的 PettingZoo 多智能体并行环境 (开启 GUI 看动画)
     env = parallel_env(
         net_file=net_path,
         route_file=route_path,
-        out_csv_name=os.path.join(LOG_DIR, 'test_marl_output'), # 测试数据也会自动存在对应的 run 文件夹下
+        out_csv_name=os.path.join(LOG_DIR, 'test_marl_output'),  # 测试数据也会自动存在对应的 run 文件夹下
         use_gui=True,  # 开启可视化界面
         num_seconds=3600,
-        reward_fn='queue'  # 必须和训练时保持一致
+        # 【修改2：参数对齐】测试时环境的奖励函数必须和训练时（Queue基线）绝对一致！
+        reward_fn='queue'
     )
 
     # SuperSuit 魔法转换 (还原训练时的架构)
@@ -127,6 +129,7 @@ def run_marl_test():
     print(f"3个路口总累计奖励 (排队越少负数越小): {total_reward:.2f}")
 
     env.close()
+
 
 if __name__ == "__main__":
     run_marl_test()
