@@ -2,6 +2,7 @@ import os
 import random
 import torch
 import numpy as np
+import math  # 【新增】支持高斯平滑奖金的计算
 import supersuit as ss
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, VecEnvWrapper
@@ -23,7 +24,7 @@ net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
 route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
 # ！！！！！每次更改：指定您要测试哪一次训练的模型 ！！！！！
-RUN_IDX = 8  # 例如您想测试 marl_run_4，就写 4
+RUN_IDX = 8  # 确保这里是您刚刚跑完绿波优化的那个编号
 RUN_DIR = os.path.join(ROOT_DIR, 'saved_models', f'marl_run_{RUN_IDX}')
 LOG_DIR = os.path.join(ROOT_DIR, 'logs', f'marl_run_{RUN_IDX}')
 
@@ -41,7 +42,6 @@ NEIGHBOR_MAP = {
     'B0': ['A0', 'C0'],
     'C0': ['B0', None]
 }
-
 
 class CommObservationFunction(DefaultObservationFunction):
     def __init__(self, ts):
@@ -76,18 +76,35 @@ class CommObservationFunction(DefaultObservationFunction):
         return np.array(final_obs, dtype=np.float32)
 
 
-# 2.2 PBRS 势能奖励函数
-def pbrs_reward(traffic_signal):
-    total_queue = traffic_signal.get_total_queued()
-    base_reward = -total_queue
-    current_light_state = traffic_signal.sumo.trafficlight.getRedYellowGreenState(traffic_signal.id)
-    active_phase_queue = 0
-    for i, lane in enumerate(traffic_signal.lanes):
-        if current_light_state[i] in ('G', 'g', 'y', 'Y'):
-            active_phase_queue += traffic_signal.sumo.lane.getLastStepHaltingNumber(lane)
-
-    phi_current = active_phase_queue / (total_queue + 1e-6)
+# 2.2 【替换】完全体绿波奖励函数 (必须与训练时使用的函数一模一样)
+def custom_green_wave_reward(traffic_signal):
+    """
+    终极融合奖励函数：无悖论 PBRS (基于势能的奖励重塑) + 绿波动能时空接力奖励。
+    该函数旨在让智能体在保证局部路口不拥堵的前提下，自主学会相邻路口间的相位差协同（绿波带）。
+    """
+    my_id = traffic_signal.id
     current_step = getattr(traffic_signal.env, "sim_step", 0)
+
+    def is_main_green(ts):
+        return ts.sumo.trafficlight.getPhase(ts.id) == 0
+
+    # ==========================================
+    # 1. 独立时间戳维护模块 (解决多智能体异步竞态条件)
+    # ==========================================
+    if is_main_green(traffic_signal):
+        if not hasattr(traffic_signal, 'my_green_start'):
+            traffic_signal.my_green_start = current_step
+    else:
+        if hasattr(traffic_signal, 'my_green_start'):
+            delattr(traffic_signal, 'my_green_start')
+
+    # ==========================================
+    # 2. 纯粹 PBRS 计算模块 (排队疏散的基础保底机制)
+    # ==========================================
+    total_queue = traffic_signal.get_total_queued()
+    base_reward = -total_queue / 100.0
+    phi_current = -total_queue / 100.0
+
     delta_time = getattr(traffic_signal.env, "delta_time", 5)
     is_new_episode = current_step <= delta_time
 
@@ -99,9 +116,32 @@ def pbrs_reward(traffic_signal):
         shaping_reward = (gamma * phi_current) - traffic_signal.last_potential
         traffic_signal.last_potential = phi_current
 
-    beta = 100.0
-    final_reward = base_reward + (beta * shaping_reward)
-    return final_reward / 100.0
+    pbrs_score = base_reward + shaping_reward
+
+    # ==========================================
+    # 3. 绿波联动奖金模块 (时空协同引擎)
+    # ==========================================
+    green_wave_bonus = 0.0
+
+    if my_id in ['A0', 'C0']:
+        a0_ts = traffic_signal.env.traffic_signals.get('A0')
+        c0_ts = traffic_signal.env.traffic_signals.get('C0')
+        if a0_ts and c0_ts and is_main_green(a0_ts) and is_main_green(c0_ts):
+            green_wave_bonus += 0.05
+
+    elif my_id == 'B0':
+        a0_ts = traffic_signal.env.traffic_signals.get('A0')
+        if a0_ts and hasattr(a0_ts, 'my_green_start'):
+            a0_green_duration = current_step - a0_ts.my_green_start
+
+            if 10 <= a0_green_duration <= 15 and is_main_green(traffic_signal):
+                green_wave_bonus += 0.5
+
+    # ==========================================
+    # 4. 奖励结算
+    # ==========================================
+    final_reward = pbrs_score + green_wave_bonus
+    return final_reward
 
 
 # 2.3 SB3 API 补丁
@@ -138,15 +178,17 @@ def run_marl_test():
     # 先生成一次兜底文件
     generate_route_file()
 
-    # 创建带有 GUI、通信观测器、PBRS奖励的平行环境
+    # 创建带有 GUI、通信观测器、绿波奖励 和 防死锁约束的平行环境
     env = parallel_env(
         net_file=net_path,
         route_file=route_path,
         out_csv_name=os.path.join(LOG_DIR, 'test_marl_output'),
         use_gui=True,  # 开启可视化界面观赏绿波
         num_seconds=3600,
-        reward_fn=pbrs_reward,  # 必须使用与训练一致的奖励体系
-        observation_class=CommObservationFunction  # 必须使用与训练一致的观测空间
+        reward_fn=custom_green_wave_reward,        # 【修改】使用与训练相同的绿波奖励函数
+        observation_class=CommObservationFunction, # 必须使用与训练一致的观测空间
+        min_green=10,                              # 【修改】必须与训练保持一致，防闪烁
+        max_green=50                               # 【修改】必须与训练保持一致，防死锁
     )
 
     # 挂载底层 reset 猴子补丁 (确保测试依然面对全新随机车流)
@@ -202,7 +244,6 @@ def run_marl_test():
     print(f"3个路口总累计 PBRS 奖励: {total_reward:.2f}")
 
     env.close()
-
 
 if __name__ == "__main__":
     run_marl_test()

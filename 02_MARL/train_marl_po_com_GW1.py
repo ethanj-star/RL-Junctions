@@ -9,41 +9,28 @@ from sumo_rl import parallel_env
 import supersuit as ss
 from typing import Callable
 
-# 【终极修复：直接导入模块，拒绝 os.system 的静默失败】
+# 终极修复：直接导入模块，拒绝 os.system 的静默失败
 from generate_Random_Traffic import generate_route_file
-
-#  新增导入：用于重写观察空间实现通信 rewrite the observation space to implement communication
+# 新增导入：用于重写观察空间实现通信
 from sumo_rl.environment.observations import DefaultObservationFunction
 from gymnasium import spaces
 
 
 def linear_schedule_with_min(initial_value: float, min_value: float) -> Callable[[float], float]:
-    """
-    带保底机制的线性衰减学习率生成器。
-    :param initial_value: 初始最大学习率 (例如 3e-4)
-    :param min_value: 最低保底学习率 (例如 3e-5)
-    :return: 返回一个根据剩余进度计算当前学习率的函数
-    """
+    """带保底机制的线性衰减学习率生成器"""
 
     def func(progress_remaining: float) -> float:
-        """
-        progress_remaining 的值会从 1.0 (训练开始) 线性下降到 0.0 (训练结束)
-        """
-        # 数学映射：当进度为 1 时，结果是 initial_value；当进度为 0 时，结果是 min_value
         return min_value + progress_remaining * (initial_value - min_value)
 
     return func
 
 
-# 路径动态获取 (Dynamic path acquisition)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
-# 换交通流 对接 8 向泊松随机车流
 route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
 
-# 自动编号：寻找下一个可用的 Run 编号 (Auto-numbering: Find the next available Run number)
 def get_next_run_number(base_dir, prefix="marl_run_"):
     if not os.path.exists(base_dir):
         return 1
@@ -58,8 +45,9 @@ def get_next_run_number(base_dir, prefix="marl_run_"):
     return max(existing_runs) + 1 if existing_runs else 1
 
 
-# 补丁：解决 5 个返回值与 4 个返回值的 API 冲突 (恢复至最干净版本，防冲突)
 class SB3CompatibilityWrapper(VecEnvWrapper):
+    """补丁：解决 5 个返回值与 4 个返回值的 API 冲突"""
+
     def __init__(self, venv):
         super().__init__(venv)
 
@@ -81,67 +69,101 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
         return results
 
 
-# 新增：带空间合作机制的基于潜力奖励塑形 (Cooperative Potential-Based Reward)
-def pbrs_reward(traffic_signal):
-    # ==========================================
-    # 🌟 核心革新：从“自私”走向“利他”
-    # ==========================================
-    # 1. 计算自身的排队惩罚
-    own_queue = traffic_signal.get_total_queued()
-
-    # 2. 计算邻居的排队惩罚 (空间合作机制)
-    neighbor_queue = 0
+def custom_green_wave_reward(traffic_signal):
+    """
+    终极融合奖励函数：无悖论 PBRS (基于势能的排队惩罚) + 绿波动能时空接力奖励。
+    """
+    # 获取当前信号灯ID、当前仿真步数和环境步长
     my_id = traffic_signal.id
-    neighbors = NEIGHBOR_MAP.get(my_id, [None, None])
-
-    # 合作系数 alpha (0.5 代表把邻居一半的痛苦当做自己的痛苦)
-    # 这个值如果在 0.1~0.3，偏向利己；如果在 0.5~1.0，高度利他。
-    alpha = 0.2
-
-    for neighbor_id in neighbors:
-        if neighbor_id is not None:
-            # 拿到邻居路口的实例对象
-            neighbor_ts = traffic_signal.env.traffic_signals[neighbor_id]
-            # 累加邻居的排队长度
-            neighbor_queue += neighbor_ts.get_total_queued()
-
-    # 计算全新的合作型基础奖励！
-    base_reward = - (own_queue + alpha * neighbor_queue)
-    # ==========================================
-
-    # 3. 获取信号灯状态计算势能
-    # (注意：势能计算依然只看自己，因为自己的红绿灯只能直接决定自己路口的绿灯比例)
-    current_light_state = traffic_signal.sumo.trafficlight.getRedYellowGreenState(traffic_signal.id)
-    active_phase_queue = 0
-    for i, lane in enumerate(traffic_signal.lanes):
-        if current_light_state[i] in ('G', 'g', 'y', 'Y'):
-            active_phase_queue += traffic_signal.sumo.lane.getLastStepHaltingNumber(lane)
-
-    # 计算排队占比 (分母使用自己的排队数)
-    phi_current = active_phase_queue / (own_queue + 1e-6)
-
-    # 4. 提取上一步的势能 (处理跨回合清零)
     current_step = getattr(traffic_signal.env, "sim_step", 0)
     delta_time = getattr(traffic_signal.env, "delta_time", 5)
+    # 判断是否为新的仿真回合
     is_new_episode = current_step <= delta_time
 
-    if not hasattr(traffic_signal, 'last_potential') or is_new_episode:
+    # 跨回合的状态泄露清除 (防止上一个 Episode 的时间戳干扰新 Episode)
+    # 如果是新回合，清理上回合残留的绿灯起始时间和相位记录
+    if is_new_episode:
+        if hasattr(traffic_signal, 'my_green_start'):
+            delattr(traffic_signal, 'my_green_start')
+        if hasattr(traffic_signal, 'last_phase'):
+            delattr(traffic_signal, 'last_phase')
+
+    # 获取当前相位
+    # 通过底层接口获取当前实际相位，并判断是否为主路绿灯（假设相位0为主路绿灯）
+    current_phase = traffic_signal.sumo.trafficlight.getPhase(traffic_signal.id)
+    is_main_green = (current_phase == 0)
+
+    # 状态追踪：判断是否“刚刚”切为绿灯
+    # 如果没有上一相位的记录则初始化
+    if not hasattr(traffic_signal, 'last_phase'):
+        traffic_signal.last_phase = current_phase
+    # 如果当前是绿灯且上一帧不是绿灯，说明处于绿灯上升沿（刚变绿）
+    just_turned_green = (is_main_green and traffic_signal.last_phase != 0)
+    # 更新上一相位记录
+    traffic_signal.last_phase = current_phase
+
+
+    # 1. 独立时间戳维护模块
+
+    # 记录主路绿灯的持续状态
+    if is_main_green:
+        # 首次进入绿灯时，记录绿灯开始的仿真步数
+        if not hasattr(traffic_signal, 'my_green_start'):
+            traffic_signal.my_green_start = current_step
+    else:
+        # 一旦不是绿灯，立刻删除绿灯时间戳，为下一次绿灯做准备
+        if hasattr(traffic_signal, 'my_green_start'):
+            delattr(traffic_signal, 'my_green_start')
+
+
+    # 2. 纯粹 PBRS 计算模块 (基于绝对排队长度)
+    # 获取当前路口所有车道的总排队车辆数
+    total_queue = traffic_signal.get_total_queued()
+    # 基础惩罚：归一化后的排队数
+    # 基础惩罚为负数，排队越长惩罚越大
+    base_penalty = -total_queue / 100.0
+
+    # 势能定义：拥堵越严重，势能越低 (负数)
+    phi_current = -total_queue / 100.0
+
+    # PBRS (Potential-Based Reward Shaping) 计算逻辑
+    if getattr(traffic_signal, 'last_potential', None) is None or is_new_episode:
+        # 初始状态无 shaping reward，记录当前势能
         traffic_signal.last_potential = phi_current
         shaping_reward = 0.0
     else:
+        # 根据势能差计算 shaping reward，帮助算法稳定收敛并防止刷分
         gamma = 0.99
         shaping_reward = (gamma * phi_current) - traffic_signal.last_potential
         traffic_signal.last_potential = phi_current
 
-    # 5. 组合最终奖励 (组合合作基础奖励与局部势能奖励)
-    beta = 100.0
-    final_reward = base_reward + (beta * shaping_reward)
 
-    return final_reward / 100.0
+    # 3. 绿波联动奖金模块 (时空协同引擎)
+    green_wave_bonus = 0.0
+
+    # 专门针对 B0 路口的绿波逻辑（硬编码的路口拓扑）
+    if my_id == 'B0':
+        # 获取上游路口 A0 的实例
+        a0_ts = traffic_signal.env.traffic_signals.get('A0')
+        if a0_ts and hasattr(a0_ts, 'my_green_start'):
+            # 计算 A0 路口当前的绿灯已持续时间
+            a0_green_duration = current_step - a0_ts.my_green_start
+
+            # 扩大时空窗口，包容 delta_time=5 的步长
+            # 当 A0 的绿灯亮了 10~16 步时（车流预计到达 B0）
+            if 10 <= a0_green_duration <= 16:
+                # 严格要求“刚刚”变绿灯才能拿暴击奖励，防止死锁绿灯白嫖
+                # 只有 B0 刚好此时变绿，才给予 2.0 的高额奖励
+                if just_turned_green:
+                    green_wave_bonus += 2.0  # 给予足量的奖励权重对抗排队惩罚
 
 
-#  核心增强：主干道定向通信机制
-#   Map neighbors
+    # 4. 奖励结算
+    # base_penalty: [-X, 0], shaping_reward: ~[-0.5, 0.5], green_wave_bonus: [0, 2.0]
+    # 汇总所有模块的奖励与惩罚，返回最终 Step Reward
+    final_reward = base_penalty + (1.0 * shaping_reward) + green_wave_bonus
+    return final_reward
+# Map neighbors
 NEIGHBOR_MAP = {
     'A0': [None, 'B0'],
     'B0': ['A0', 'C0'],
@@ -150,24 +172,12 @@ NEIGHBOR_MAP = {
 
 
 class CommObservationFunction(DefaultObservationFunction):
-    """
-    带有通信机制的自定义观测器：11 维基础状态 + 2 维邻居主干道排队信息
-    (Custom observer with communication mechanism: 11-dimensional base state + 2-dimensional neighboring main arterial queue info)
-    """
-
     def __init__(self, ts):
         super().__init__(ts)
-        # 【修改点】：删掉了在这里提前查询维度的代码，避免了 sumo-rl 的初始化顺序 Bug
 
     def observation_space(self):
-        # 【修改点】：把空间维度的计算延迟到这里！
-        # computation of spatial dimensions
-        # 当外部调用这个函数时，TrafficSignal 初始化完成
         base_space = super().observation_space()
         base_dim = base_space.shape[0]
-
-        # 新增 2 维：左邻居主干道排队，右邻居主干道排队
-        # (Added 2 dimensions: Left neighbor main arterial queue, Right neighbor main arterial queue)
         new_dim = base_dim + 2
 
         return spaces.Box(
@@ -176,40 +186,35 @@ class CommObservationFunction(DefaultObservationFunction):
         )
 
     def __call__(self):
-        # 1. 提取自己的基础数据 (1. Extract own base data)
         base_obs = super().__call__()
-
-        # 2. 查拓扑字典，获取邻居 ID (get neighbor IDs)
         my_id = self.ts.id
         neighbors = NEIGHBOR_MAP.get(my_id, [None, None])
 
         extra_obs = []
         for neighbor_id in neighbors:
             if neighbor_id is None:
-                # 边缘路口：零填充占位 (Edge intersection: Zero-padding placeholder)
                 extra_obs.append(0.0)
             else:
-                neighbor_ts = self.ts.env.traffic_signals[neighbor_id]
+                neighbor_ts = self.ts.env.traffic_signals.get(neighbor_id)
+                # 安全防御：如果没拿到 neighbor_ts，补 0
+                if not neighbor_ts:
+                    extra_obs.append(0.0)
+                    continue
 
-                # 【神级优化】：只计算主干道 (排除带有 top/bottom 的辅路车道)
-                # (Only calculate main arterial roads (excluding auxiliary lanes containing 'top'/'bottom'))
                 main_arterial_queue = 0
                 for lane in neighbor_ts.lanes:
+                    # 【注意】这里依赖了 net.xml 的车道命名规范！
                     if "top" not in lane and "bottom" not in lane:
                         main_arterial_queue += neighbor_ts.sumo.lane.getLastStepHaltingNumber(lane)
 
-                # 塞入极其纯净的主干道拥堵情报 (Insert main arterial congestion info)
                 extra_obs.append(float(main_arterial_queue))
 
-        # 3. 拼接生成最终的通信增强状态数组 (generate the final communication-enhanced state array)
         final_obs = np.concatenate([base_obs, extra_obs])
         return np.array(final_obs, dtype=np.float32)
 
 
-#  主程序 (Main Program)
-
 if __name__ == '__main__':
-    print("正在初始化多智能体 SUMO 环境...")  # (Initializing multi-agent SUMO environment...)
+    print("正在初始化多智能体 SUMO 环境...")
 
     seed = 8848
     random.seed(seed)
@@ -222,8 +227,7 @@ if __name__ == '__main__':
     os.makedirs(logs_base, exist_ok=True)
 
     run_idx = get_next_run_number(saved_models_base, "marl_run_")
-    print(
-        f"\n 自动检测到历史记录，本次 MARL 分配为: [ 第 {run_idx} 次运行 ]")  # (\n Historical records auto-detected, this MARL is assigned as: [ Run {run_idx} ])
+    print(f"\n 自动检测到历史记录，本次 MARL 分配为: [ 第 {run_idx} 次运行 ]")
 
     run_save_dir = os.path.join(saved_models_base, f'marl_run_{run_idx}')
     os.makedirs(run_save_dir, exist_ok=True)
@@ -232,35 +236,33 @@ if __name__ == '__main__':
     csv_base_path = os.path.join(run_csv_dir, 'marl_output')
     tensorboard_log_path = os.path.join(logs_base, 'ppo_marl_tb')
 
-    # 【前置保障】：先生成一次兜底文件，防止首次启动找不到文件报错
     print(" [系统启动] 正在生成初始的泊松随机交通流...")
     generate_route_file()
 
-    # 1. 创建环境 (挂载了纯净的 PBRS 奖励 和 主干道定向通信)
-    # Create environment
     env = parallel_env(
         net_file=net_path,
         route_file=route_path,
         out_csv_name=csv_base_path,
         use_gui=False,
         num_seconds=3600,
-        reward_fn=pbrs_reward,
-        observation_class=CommObservationFunction
+        reward_fn=custom_green_wave_reward,
+        observation_class=CommObservationFunction,
+        max_green=60  # 绿灯防死锁安全锁
     )
 
-    # 核心拦截器：猴子补丁 (a Monkey Patch)
-    # 替换底层的 reset 方法，保证交通流生成在 SUMO 读取之前完成！ dynamic change reset function，add new traffic flow .xml
+    # 核心拦截器：猴子补丁
     original_reset = env.reset
+
+
     def custom_reset(*args, **kwargs):
         print("\n [完全体通信版] 监听到底层环境重置信号，正在为本局生成全新泊松车流...")
         generate_route_file()
         return original_reset(*args, **kwargs)
-    # 将原生 reset 替换为我们的拦截器
+
+
     env.reset = custom_reset
 
-
     env = ss.pettingzoo_env_to_vec_env_v1(env)
-
     env = ss.concat_vec_envs_v1(
         env,
         num_vec_envs=1,
@@ -280,17 +282,15 @@ if __name__ == '__main__':
         batch_size=256,
         n_epochs=10,
         clip_range=0.2,
-        ent_coef=0.03,
+        ent_coef=0.03,  # 增加熵系数，鼓励在拥堵时尝试新动作
         target_kl=0.05,
         verbose=1,
-        device="cpu",
+        device="cpu",  # 如果有GPU可改为 "cuda"
         tensorboard_log=tensorboard_log_path
     )
 
-    # output realtime dimentions
     print("\n" + "=" * 40)
-    print(
-        " 神经网络真实维度 (带定向主干道通信补丁)：")  # (True neural network dimensions (with directed main arterial communication patch):)
+    print(" 神经网络真实维度 (带定向主干道通信补丁)：")
     print(f" 状态输入维度 (Observation): {model.policy.observation_space}")
     print(f" 动作输出维度 (Action): {model.policy.action_space}")
     print("=" * 40 + "\n")
@@ -302,12 +302,11 @@ if __name__ == '__main__':
     )
 
     print("环境就绪！SB3 正在接收剔除噪声后的主干道情报。开始训练...")
+    # 由于是 3 个智能体 (concat_vec_envs 会将 1 个 env 乘以 3)，总 step 会消耗得比平时快 3 倍
     model.learn(total_timesteps=300000, callback=checkpoint_callback, tb_log_name=f"run_{run_idx}")
 
     model.save(os.path.join(run_save_dir, "ppo_marl_model"))
     env.save(os.path.join(run_save_dir, "vec_normalize_marl.pkl"))
 
     env.close()
-    print(f"\n 多智能体训练完成！所有产出均已安全保存至专属目录:")
-    print(f"模型与断点: {run_save_dir}")
-    print(f"日志文件: {run_csv_dir}")
+    print(f"\n 多智能体训练完成！")

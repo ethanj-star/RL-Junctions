@@ -16,8 +16,8 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 向上一级，获取根目录 (例如: 3JucRL)
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 
-# ！！！！！每次更改 指定你想画第几次 MARL 训练的图
-RUN_IDX = 5
+# ！！！！！每次更改 指定你想画第几次 MARL 训练的图`
+RUN_IDX = 15
 # 现在统一去根目录下的 logs 里找数据！
 LOG_DIR = os.path.join(ROOT_DIR, 'logs', f'marl_run_{RUN_IDX}')
 
