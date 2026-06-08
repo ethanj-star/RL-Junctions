@@ -68,35 +68,38 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
             return obs, rews, dones, infos
         return results
 
-
 def custom_green_wave_reward(traffic_signal):
     """
     终极融合奖励函数：无悖论 PBRS (基于势能的排队惩罚) + 绿波动能时空接力奖励。
     """
     my_id = traffic_signal.id
+    # current_step 代表的是当前仿真环境运行到了第几秒（或第几步）
     current_step = getattr(traffic_signal.env, "sim_step", 0)
     delta_time = getattr(traffic_signal.env, "delta_time", 5)
     is_new_episode = current_step <= delta_time
 
-    # 【修复陷阱1】：跨回合的状态泄露清除
+    # 【新回合处理】在每个新回合开始时清除残留的状态属性，防止跨回合的状态泄露。
+    # [New Episode Handling] Clear residual state attributes at the start of a new episode to prevent cross-episode state leakage.
     if is_new_episode:
         if hasattr(traffic_signal, 'my_green_start'):
             delattr(traffic_signal, 'my_green_start')
         if hasattr(traffic_signal, 'last_phase'):
             delattr(traffic_signal, 'last_phase')
 
-    # 获取当前相位
+    #  【状态追踪】获取当前相位并追踪是否“刚刚”切换为绿灯，用于后续的接力奖励判定。
+    #  [State Tracking] Fetch the current phase and detect if it has "just" turned green for subsequent relay bonus evaluation.
     current_phase = traffic_signal.sumo.trafficlight.getPhase(traffic_signal.id)
     is_main_green = (current_phase == 0)
 
-    # 状态追踪：判断是否“刚刚”切为绿灯
     if not hasattr(traffic_signal, 'last_phase'):
         traffic_signal.last_phase = current_phase
     just_turned_green = (is_main_green and traffic_signal.last_phase != 0)
     traffic_signal.last_phase = current_phase
 
     # ==========================================
-    # 1. 独立时间戳维护模块
+    # 1. 独立时间戳维护模块 / Independent Timestamp Maintenance Module
+    #  记录或清除当前交通灯主路绿灯开启的初始仿真步数，以此维护绿灯持续时间。
+    #  Record or delete the initial simulation step when the main road green light starts to track its duration.
     # ==========================================
     if is_main_green:
         if not hasattr(traffic_signal, 'my_green_start'):
@@ -106,7 +109,10 @@ def custom_green_wave_reward(traffic_signal):
             delattr(traffic_signal, 'my_green_start')
 
     # ==========================================
-    # 2. 纯粹 PBRS 计算模块 (基于绝对排队长度)
+    # 2. 纯粹 PBRS 计算模块 (基于绝对排队长度) / Pure PBRS Calculation Module (Based on Absolute Queue Length)
+    #  利用基于势能的奖励塑造（PBRS）计算排队惩罚，在不改变最优策略的前提下加速模型收敛。
+    #   Calculate queue penalty using Potential-Based Reward Shaping (PBRS) to accelerate convergence
+    #   without altering the optimal policy.
     # ==========================================
     total_queue = traffic_signal.get_total_queued()
     base_penalty = -total_queue / 100.0
@@ -121,7 +127,10 @@ def custom_green_wave_reward(traffic_signal):
         traffic_signal.last_potential = phi_current
 
     # ==========================================
-    # 3. 绿波联动奖金模块 (全线贯通版)
+    # 3. 绿波联动奖金模块 (全线贯通版) / Green Wave Coordination Bonus Module (Full Alignment Version)
+    #  动态寻找上游路口，若上游车流恰好在预测的时空窗口内到达且本路口刚变绿，则给予单次接力暴击奖金。
+    #  Dynamically locate the upstream intersection and grant a one-time relay bonus if upstream
+    #  traffic arrives within the predicted spatiotemporal window just as this light turns green.
     # ==========================================
     green_wave_bonus = 0.0
 
@@ -144,13 +153,17 @@ def custom_green_wave_reward(traffic_signal):
                     green_wave_bonus += 2.0  # 接力暴击奖金
 
     # ==========================================
-    # 4. 奖励结算
+    # 4. 奖励结算 / Reward Settlement
+    #  综合基础排队惩罚、势能塑造奖励和绿波联动奖金，计算并返回最终的总奖励值。
+    #  Aggregate the base penalty, shaping reward, and green wave bonus to calculate and return the final reward value.
     # ==========================================
     final_reward = base_penalty + (1.0 * shaping_reward) + green_wave_bonus
     return final_reward
 
 
-# Map neighbors
+#  定义交通网络的拓扑结构映射，记录每个路口对应的左右邻居节点 [左邻居, 右邻居]。
+#  Define the topology map of the traffic network, recording the left and right neighbors [Left, Right]
+#  for each intersection.
 NEIGHBOR_MAP = {
     'A0': [None, 'B0'],
     'B0': ['A0', 'C0'],
@@ -167,6 +180,9 @@ class CommObservationFunction(DefaultObservationFunction):
     def __init__(self, ts):
         super().__init__(ts)
 
+    #  【观测空间定义】动态扩展基础观测空间，额外增加 6 个维度以容纳左右两个邻居的状态快照。
+    # [Observation Space Definition] Dynamically expand the base observation space by adding 6
+    # extra dimensions for features from both neighbors.
     def observation_space(self):
         base_space = super().observation_space()
         base_dim = base_space.shape[0]
@@ -179,6 +195,9 @@ class CommObservationFunction(DefaultObservationFunction):
             high=np.ones(new_dim, dtype=np.float32) * np.inf,
         )
 
+    # 【观测特征提取】获取自身基础观测，并遍历所有存在且合法的邻居节点，提取归一化的排队数、相位和绿灯时长。
+    #  [Observation Feature Extraction] Fetch base observations and iterate through valid
+    #  neighbors to extract normalized queue, phase, and green duration features.
     def __call__(self):
         base_obs = super().__call__()
         my_id = self.ts.id
@@ -188,6 +207,7 @@ class CommObservationFunction(DefaultObservationFunction):
         for neighbor_id in neighbors:
             if neighbor_id is None:
                 # 边缘路口的缺失邻居：用 3 个 0.0 占位
+                # If the neighbor is None (edge boundary), append three 0.0 values as placeholders
                 extra_obs.extend([0.0, 0.0, 0.0])
             else:
                 neighbor_ts = self.ts.env.traffic_signals.get(neighbor_id)
@@ -195,21 +215,24 @@ class CommObservationFunction(DefaultObservationFunction):
                     extra_obs.extend([0.0, 0.0, 0.0])
                     continue
 
-                # 情报 1：主干道排队数 (经过软归一化，上限设为 50 辆，防止输入爆炸)
+                #  1：主干道排队数# 对排队车辆总数进行归一化，以 50 辆为阈值上限，把数值安全截断在 [0.0, 1.0] 区间内
+                # Normalize the total queue count by dividing by 50.0 and clipping at a max of 1.0
                 main_arterial_queue = 0
                 for lane in neighbor_ts.lanes:
                     if "top" not in lane and "bottom" not in lane:
                         main_arterial_queue += neighbor_ts.sumo.lane.getLastStepHaltingNumber(lane)
                 queue_norm = min(main_arterial_queue / 50.0, 1.0)
 
-                # 情报 2：邻居是否处于主路绿灯相位 (Phase 0)
+                # 2：邻居是否处于主路绿灯相位 (Phase 0)
                 current_phase = neighbor_ts.sumo.trafficlight.getPhase(neighbor_id)
                 is_main_green = 1.0 if current_phase == 0 else 0.0
 
-                # 情报 3：绿灯已亮秒数前馈 (对齐 max_green=60)
+                # 3：绿灯已亮秒数前馈 (对齐 max_green=60)
                 green_duration_norm = 0.0
                 if is_main_green == 1.0 and hasattr(neighbor_ts, 'my_green_start'):
                     current_step = getattr(self.ts.env, "sim_step", 0)
+                    # 用当前步数减去开始步数算出已持续时间，除以最大绿灯时间 60.0 进行归一化，上限截断为 1.0
+                    # Calculate the green duration, divide by 60.0 for normalization, and clip at 1.0
                     green_duration_norm = min((current_step - neighbor_ts.my_green_start) / 60.0, 1.0)
 
                 extra_obs.extend([queue_norm, is_main_green, green_duration_norm])

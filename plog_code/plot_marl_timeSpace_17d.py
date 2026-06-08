@@ -25,7 +25,7 @@ route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 # 动态指定测试模型编号
 # ==========================================
 # ！！！！！每次更改：指定您要测试哪一次训练的模型 ！！！！！
-RUN_IDX = 14  # 匹配您带有前馈雷达的最新模型
+RUN_IDX = 29  # 匹配您带有前馈雷达的最新模型
 # 动态拼接当前选定模型所在的文件夹路径
 RUN_DIR = os.path.join(ROOT_DIR, 'saved_models', f'marl_run_{RUN_IDX}')
 # 指定您的最佳模型路径
@@ -114,7 +114,7 @@ class CommObservationFunction(DefaultObservationFunction):
 
                 # 2. 绿灯状态
                 current_phase = neighbor_ts.sumo.trafficlight.getPhase(neighbor_id)
-                is_main_green = 1.0 if current_phase == 0 else 0.0
+                is_main_green = 1.0 if current_phase == 2 else 0.0
 
                 # 3. 绿灯已亮秒数
                 green_duration_norm = 0.0
@@ -158,7 +158,7 @@ def run_test_and_harvest_data():
         num_seconds=3600,
         reward_fn=custom_green_wave_reward, # 【核心修复】开启奖励函数引擎，驱动时间戳计算
         observation_class=CommObservationFunction,
-        min_green=10, # 保持底层动作空间严格对齐
+        min_green=5, # 保持底层动作空间严格对齐
         max_green=60
     )
 

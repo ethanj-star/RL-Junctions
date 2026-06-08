@@ -17,7 +17,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 
 # ！！！！！每次更改 指定你想画第几次 MARL 训练的图`
-RUN_IDX = 15
+RUN_IDX = 32
 # 现在统一去根目录下的 logs 里找数据！
 LOG_DIR = os.path.join(ROOT_DIR, 'logs', f'marl_run_{RUN_IDX}')
 
@@ -119,9 +119,9 @@ def plot_marl_learning_curve():
     ax1.set_ylabel('Average Waiting Time (seconds)', fontsize=12)
 
     # 【核心修改区：锁死图 1 坐标轴刻度】
-    ax1.set_xlim(0, 160)
+    ax1.set_xlim(0, 480)
     ax1.set_ylim(0, 300)
-    ax1.set_xticks(np.arange(0, 161, 20))  # X轴 0-160，步长 20
+    ax1.set_xticks(np.arange(0, 481, 20))  # X轴 0-160，步长 20
     ax1.set_yticks(np.arange(0, 301, 30))  # Y轴 30-300，步长 30
 
     ax1.legend()
@@ -166,8 +166,8 @@ def plot_marl_learning_curve():
     ax2.set_ylabel('Average Queue Length (vehicles)', fontsize=12)
 
     # 【修复点】：排队车辆数（Queue）的量级通常比等待时间小，且必须从 0 开始！
-    ax2.set_xlim(0, 160)
-    ax2.set_xticks(np.arange(0, 161, 20))  # X轴保持 0-160，步长 20
+    ax2.set_xlim(0, 480)
+    ax2.set_xticks(np.arange(0, 481, 20))  # X轴保持 0-160，步长 20
 
     # 将 Y 轴改为 0 到 150 (你可以根据实际情况调整最大值，比如改成 0-200)
     ax2.set_ylim(0, 38)

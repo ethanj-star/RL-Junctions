@@ -3,35 +3,50 @@ import random
 import numpy as np
 import torch
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize  # 【修改1】替换为防崩溃的单核 DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.utils import set_random_seed
 from sumo_rl import SumoEnvironment
 from wrappers import ThreeJunctionCentralizedWrapper
+from typing import Callable
+
+# 【终极修复：直接导入模块，拒绝 os.system 的静默失败】
+from generate_Random_Traffic import generate_route_file
+
+
+# 【修改2：参数对齐】引入与 MARL 代码完全相同的线性学习率衰减函数
+def linear_schedule_with_min(initial_value: float, min_value: float) -> Callable[[float], float]:
+    """
+    带保底机制的线性衰减学习率生成器。
+    """
+
+    def func(progress_remaining: float) -> float:
+        return min_value + progress_remaining * (initial_value - min_value)
+
+    return func
+
 
 # 路径动态获取 (Dynamic path acquisition)
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))   #获取实时路径 (Get real-time absolute path)
-ROOT_DIR = os.path.dirname(CURRENT_DIR)        #回到上一层（根目录） (Go to parent directory / root dir)
-# 在获取的路径上加上文件名，且不用+可以自动处理跨平台操作系统的路径斜杠问题。 (Append filenames using os.path.join to handle cross-platform slash issues automatically instead of using '+')
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))  # 获取实时路径
+ROOT_DIR = os.path.dirname(CURRENT_DIR)  # 回到上一层（根目录）
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
-route_path = os.path.join(ROOT_DIR, 'traffic.rou.rou.xml')
+# 【修改3：对齐交通流】使用和 MARL 一样的随机泊松车流
+route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
 
-# 自动编号器：寻找下一个可用的 Run 编号（防止新的log覆盖旧的） (Auto-numbering tool: Find the next available Run ID to prevent new logs from overwriting old ones)
+# 自动编号器：寻找下一个可用的 Run 编号（防止新的log覆盖旧的）
 def get_next_run_number(base_dir, prefix="single_queue_run_"):
-# 扫描目录，找到最大的 run 编号并 +1 (Scan the directory, find the max run ID and add 1)
     if not os.path.exists(base_dir):
-        return 1              #如果父目录都没有就定义成第一个 (If parent dir doesn't exist, start with 1)
+        return 1
     existing_runs = []
     for folder in os.listdir(base_dir):
         if folder.startswith(prefix):
             try:
-                # 提取数字部分，比如 'single_queue_run_3' 提取出 3 (Extract the numeric part, e.g., get 3 from 'single_queue_run_3')
                 num = int(folder.replace(prefix, ""))
                 existing_runs.append(num)
             except ValueError:
-                continue           #遇到名字不对的跳过 (Skip if the folder name format is incorrect)
-    return max(existing_runs) + 1 if existing_runs else 1     #把最大的+1，没有就直接是1 (Return max + 1, or 1 if the list is empty)
+                continue
+    return max(existing_runs) + 1 if existing_runs else 1
 
 
 # 把动态的 csv_base_path 传进来 (Pass in the dynamic csv_base_path)
@@ -40,80 +55,105 @@ def make_env(rank, seed, csv_base_path):
         raw_env = SumoEnvironment(
             net_file=net_path,
             route_file=route_path,
-            out_csv_name=f"{csv_base_path}_{rank}", # 动态挂载日志名字 (Dynamically mount log filename)
+            out_csv_name=f"{csv_base_path}_{rank}",  # 动态挂载日志名字
             use_gui=False,
             num_seconds=3600,
-            reward_fn='queue'   #queue 奖励函数 (Queue reward function)
+            reward_fn='queue'  # queue 奖励函数
         )
         env = ThreeJunctionCentralizedWrapper(raw_env)
+
+        # ==========================================
+        # 🌟 核心拦截器：狸猫换太子 (Monkey Patch)
+        # 挂载在底层 env 上，完美拦截 DummyVecEnv 的自动 reset 信号
+        # ==========================================
+        original_reset = env.reset
+
+        def custom_reset(*args, **kwargs):
+            print("\n🔄 [单智能体 Queue] 监听到底层环境重置信号，正在为本局生成全新泊松车流...")
+            generate_route_file()
+            return original_reset(*args, **kwargs)
+
+        env.reset = custom_reset
+        # ==========================================
+
         return env
 
     return _init
 
 
 if __name__ == '__main__':
-
-    # 固定全局随机种子 （！！！每次运行修改记录） (Fix global random seed (!!! modify record each run))
+    # 固定全局随机种子 （！！！每次运行修改记录）
     seed = 8848
-    random.seed(seed)             # Python 的基础随机 (Python's base random)
-    np.random.seed(seed)          # NumPy 的数学计算随机 (NumPy's mathematical random)
-    torch.manual_seed(seed)       # PyTorch的随机 (PyTorch's random)
-    set_random_seed(seed)         # Stable-Baselines3 (SB3) 框架的随机 (Stable-Baselines3 framework random)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    set_random_seed(seed)
 
-    # 动态分配本次训练的路径 (Dynamically allocate paths for this training run)
+    # 动态分配本次训练的路径
     saved_models_base = os.path.join(ROOT_DIR, 'saved_models')
     logs_base = os.path.join(ROOT_DIR, 'logs')
-    # 创建目录储存模型和log (Create directories to store models and logs)
     os.makedirs(saved_models_base, exist_ok=True)
     os.makedirs(logs_base, exist_ok=True)
 
-    # 自动计算本次是第几次运行 (Automatically calculate the current run number)
+    # 自动计算本次是第几次运行
     run_idx = get_next_run_number(saved_models_base, "single_queue_run_")
     print(f"\n 自动检测到历史记录，本次分配为: [ 第 {run_idx} 次运行 ]")
 
-    # 根据编号创建本次运行的专属模型保存文件夹 (Create an exclusive model save folder for this run based on the ID)
+    # 根据编号创建本次运行的专属模型保存文件夹
     run_save_dir = os.path.join(saved_models_base, f'single_queue_run_{run_idx}')
     os.makedirs(run_save_dir, exist_ok=True)
 
-    # 根据编号创建本次运行的专属 CSV 日志文件夹 (Create an exclusive CSV log folder for this run based on the ID)
+    # 根据编号创建本次运行的专属 CSV 日志文件夹
     run_csv_dir = os.path.join(logs_base, f'single_queue_run_{run_idx}')
     os.makedirs(run_csv_dir, exist_ok=True)
     csv_base_path = os.path.join(run_csv_dir, 'output')
 
-    # Tensorboard 总目录依然保持不变，在localhost方便把多条曲线画在同一张图里对比 (Keep the main Tensorboard directory unchanged to easily plot multiple curves on the same graph on localhost)
     tensorboard_log_path = os.path.join(logs_base, 'ppo_single_tb')
 
-    num_cpu = 4
-    print(f"正在后台启动 {num_cpu} 个并行的 SUMO 环境...")
+    # 【核心安全修改】改为单核运行，避免多个进程同时争抢写入 traffic.random.rou.xml 导致 SUMO 崩溃
+    # 同时也保证了和 MARL 对比时的硬件公平性
+    num_cpu = 1
+    print(f"正在后台启动 {num_cpu} 个单智能体 SUMO 环境...")
 
-    # 创建多进程环境，传入基础 seed 和动态生成的 csv 路径 (Create multi-process environments, pass base seed and dynamically generated csv path)
-    env = SubprocVecEnv([make_env(i, seed=seed, csv_base_path=csv_base_path) for i in range(num_cpu)])
+    # 【前置保障】：先生成一次兜底文件，防止首次启动找不到文件报错
+    print("🚀 [系统启动] 正在生成初始的泊松随机交通流...")
+    generate_route_file()
+
+    # 使用 DummyVecEnv 替代 SubprocVecEnv 进行单核安全并行封装
+    env = DummyVecEnv([make_env(i, seed=seed, csv_base_path=csv_base_path) for i in range(num_cpu)])
     env = VecMonitor(env)
 
     # 数据归一化 (Data normalization)
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
 
+    # 【修改4：超参数全量对齐】与 MARL 完全一致的黄金配置
     model = PPO(
         "MlpPolicy",
         env,
-        learning_rate=3e-5,
-        n_steps=1024,
-        batch_size=256,
-        n_epochs=5,
+        learning_rate=linear_schedule_with_min(3e-4, 3e-5),  # 动态学习率
+        n_steps=2048,  # 对齐
+        batch_size=256,  # 对齐
+        n_epochs=10,  # 对齐
         clip_range=0.2,
-        ent_coef=0.005,
+        ent_coef=0.03,  # 对齐
         target_kl=0.05,
         verbose=1,
         device="cpu",
         seed=seed,
-        tensorboard_log=tensorboard_log_path  # 统一定位到 TB 日志主目录 (Uniformly target the TB main log directory)
+        tensorboard_log=tensorboard_log_path
     )
 
-    print(f"环境就绪！开始单智能体并行训练...")
-    # tb_log_name 会在 Tensorboard 目录下自动新建 "run_1", "run_2" 子文件夹 (tb_log_name will auto-create subfolders like "run_1", "run_2" under the Tensorboard directory)
-    model.learn(total_timesteps=500000, tb_log_name=f"run_{run_idx}")
+    # 【修改5：激活存档点功能】
+    checkpoint_callback = CheckpointCallback(
+        save_freq=50000,
+        save_path=os.path.join(run_save_dir, 'checkpoints'),
+        name_prefix='rl_model'
+    )
 
-    # 文件会自动存到：saved_models/single_queue_run_X/ppo_model.zip (Files will be automatically saved to: saved_models/single_queue_run_X/ppo_model.zip)
+    print(f"环境就绪！开始单智能体集中式训练...")
+    model.learn(total_timesteps=361000, callback=checkpoint_callback, tb_log_name=f"run_{run_idx}")
+
+    # 文件会自动存到：saved_models/single_queue_run_X/ppo_model.zip
     model.save(os.path.join(run_save_dir, "ppo_model"))
     env.save(os.path.join(run_save_dir, "vec_normalize.pkl"))
 

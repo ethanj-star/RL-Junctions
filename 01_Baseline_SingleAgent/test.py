@@ -16,7 +16,7 @@ route_path = os.path.join(ROOT_DIR, 'traffic.rou.rou.xml')
 
 # 手动指定你要测试哪一次训练的模型
 # 比如你想测试第 1 次跑出来的模型，就写 1
-RUN_IDX = 1
+RUN_IDX = 4
 RUN_DIR = os.path.join(ROOT_DIR, 'saved_models', f'single_queue_run_{RUN_IDX}')
 MODEL_PATH = os.path.join(RUN_DIR, 'ppo_model.zip')
 VEC_NORM_PATH = os.path.join(RUN_DIR, 'vec_normalize.pkl')

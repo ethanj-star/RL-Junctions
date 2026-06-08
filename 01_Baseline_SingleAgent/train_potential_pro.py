@@ -8,6 +8,23 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.utils import set_random_seed
 from sumo_rl import SumoEnvironment
 from wrappers import ThreeJunctionCentralizedWrapper
+from typing import Callable
+
+def linear_schedule_with_min(initial_value: float, min_value: float) -> Callable[[float], float]:
+    """
+    带保底机制的线性衰减学习率生成器。
+    :param initial_value: 初始最大学习率 (例如 3e-4)
+    :param min_value: 最低保底学习率 (例如 3e-5)
+    :return: 返回一个根据剩余进度计算当前学习率的函数
+    """
+    def func(progress_remaining: float) -> float:
+        """
+        progress_remaining 的值会从 1.0 (训练开始) 线性下降到 0.0 (训练结束)
+        """
+        # 数学映射：当进度为 1 时，结果是 initial_value；当进度为 0 时，结果是 min_value
+        return min_value + progress_remaining * (initial_value - min_value)
+    return func
+
 
 # 路径动态获取 (Dynamic path acquisition)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))   #获取实时路径 (Get real-time absolute path)
@@ -51,7 +68,7 @@ def pbrs_reward(traffic_signal):
     traffic_signal.last_potential = phi_current
 
     # 5. 组合最终奖励: R' = R + (Beta * F)  calculate final reward
-    beta = 300.0
+    beta = 100.0
     final_reward = base_reward + (beta * shaping_reward)
     return final_reward / 100.0   #加上静态缩放，弥补关闭奖励归一化以后的梯度更新锁死。/ 100 to normalize
 
@@ -135,12 +152,12 @@ if __name__ == '__main__':
     model = PPO(
         "MlpPolicy",
         env,
-        learning_rate=3e-5,
-        n_steps=1024,
+        learning_rate=linear_schedule_with_min(3e-4, 3e-5),
+        n_steps=2048,
         batch_size=256,
-        n_epochs=5,
+        n_epochs=10,
         clip_range=0.2,
-        ent_coef=0.005,
+        ent_coef=0.03,
         target_kl=0.05,
         verbose=1,
         device="cpu",

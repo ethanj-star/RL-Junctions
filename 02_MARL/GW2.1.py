@@ -71,30 +71,67 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
 
 def custom_green_wave_reward(traffic_signal):
     """
-    平衡修复版奖励：强化 PBRS 惩罚权重 + 削弱动能奖金 + 辅路熔断机制
+    终极融合奖励函数 (自适应微调版):
+    加权 PBRS + 动态时空窗口 + 绿波维持吞吐量奖励
     """
     my_id = traffic_signal.id
     current_step = getattr(traffic_signal.env, "sim_step", 0)
+    delta_time = getattr(traffic_signal.env, "delta_time", 5)
+    is_new_episode = current_step <= delta_time
+
+    if is_new_episode:
+        if hasattr(traffic_signal, 'my_green_start'):
+            delattr(traffic_signal, 'my_green_start')
+        if hasattr(traffic_signal, 'my_green_start_queue'):
+            delattr(traffic_signal, 'my_green_start_queue')
+        if hasattr(traffic_signal, 'last_phase'):
+            delattr(traffic_signal, 'last_phase')
 
     current_phase = traffic_signal.sumo.trafficlight.getPhase(traffic_signal.id)
     is_main_green = (current_phase == 0)
 
-    # 1. 时间戳维护 (保持不变，供观测器使用)
+    if not hasattr(traffic_signal, 'last_phase'):
+        traffic_signal.last_phase = current_phase
+    just_turned_green = (is_main_green and traffic_signal.last_phase != 0)
+    traffic_signal.last_phase = current_phase
+
+    # ==========================================
+    # 1. 独立时间戳与“发车快照”维护模块
+    # ==========================================
     if is_main_green:
         if not hasattr(traffic_signal, 'my_green_start'):
             traffic_signal.my_green_start = current_step
+
+            # 【核心微调 2 前置】：拍快照！记录刚变绿那一瞬间主路的排队车数
+            # 这代表了即将释放的上游车队规模
+            main_q = 0
+            for lane in traffic_signal.lanes:
+                if "top" not in lane and "bottom" not in lane:
+                    main_q += traffic_signal.sumo.lane.getLastStepHaltingNumber(lane)
+            traffic_signal.my_green_start_queue = main_q
     else:
         if hasattr(traffic_signal, 'my_green_start'):
             delattr(traffic_signal, 'my_green_start')
+        if hasattr(traffic_signal, 'my_green_start_queue'):
+            delattr(traffic_signal, 'my_green_start_queue')
 
-    # 2. PBRS 计算 (强化惩罚力度)
-    total_queue = traffic_signal.get_total_queued()
-    # 【修复 1】：将归一化系数从 100.0 改为 10.0，让排队的惩罚痛感增加 10 倍！
-    base_penalty = -total_queue / 10.0
-    phi_current = -total_queue / 10.0
+    # ==========================================
+    # 2. 纯粹 PBRS 计算模块 (【核心微调 3】：主次权重倾斜)
+    # ==========================================
+    weighted_queue = 0.0
+    for lane in traffic_signal.lanes:
+        halting = traffic_signal.sumo.lane.getLastStepHaltingNumber(lane)
+        if "top" not in lane and "bottom" not in lane:
+            # 主干道排队痛感增加，权重 1.5
+            weighted_queue += halting * 1.5
+        else:
+            # 支路保持正常痛感 1.0
+            weighted_queue += halting * 1.0
 
-    delta_time = getattr(traffic_signal.env, "delta_time", 5)
-    if getattr(traffic_signal, 'last_potential', None) is None or current_step <= delta_time:
+    base_penalty = -weighted_queue / 100.0
+    phi_current = -weighted_queue / 100.0
+
+    if getattr(traffic_signal, 'last_potential', None) is None or is_new_episode:
         traffic_signal.last_potential = phi_current
         shaping_reward = 0.0
     else:
@@ -102,50 +139,79 @@ def custom_green_wave_reward(traffic_signal):
         shaping_reward = (gamma * phi_current) - traffic_signal.last_potential
         traffic_signal.last_potential = phi_current
 
-    pbrs_score = base_penalty + shaping_reward
+    # ==========================================
+    # 3. 绿波联动奖金模块 (【核心微调 1 & 2】：动态窗口与维持奖金)
+    # ==========================================
+    green_wave_bonus = 0.0
 
-    # 计算辅路（带有 "top" 或 "bottom" 的车道）上排队停滞的车辆总数，以防止极端拥堵。
-    # Calculate the number of halting vehicles on side streets to prevent extreme congestion.
-    # 3. 辅路熔断机制 (防“爆表”终极保险)
-    side_street_queue = 0
-    # 统计辅路 (带有 top 或 bottom 的车道) 的排队
-    for lane in traffic_signal.lanes:
-        if "top" in lane or "bottom" in lane:
-            side_street_queue += traffic_signal.sumo.lane.getLastStepHaltingNumber(lane)
+    # 动态寻找上游路口
+    upstream_id = None
+    if my_id == 'B0':
+        upstream_id = 'A0'
+    elif my_id == 'C0':
+        upstream_id = 'B0'
 
-    # 如果辅路积压的车辆超过 15 辆的阈值，则触发熔断状态。
-    # Trigger a meltdown state if the side street queue exceeds the threshold of 15 vehicles.
-    # 【修复 3】：如果辅路积压超过 15 辆车，触发熔断！
-    is_melt_down = side_street_queue > 15
+    if upstream_id:
+        upstream_ts = traffic_signal.env.traffic_signals.get(upstream_id)
+        if upstream_ts and hasattr(upstream_ts, 'my_green_start'):
+            upstream_green_duration = current_step - upstream_ts.my_green_start
 
-    # 计算主路的动能流率奖励，只有在主路绿灯且未触发辅路熔断时才发放。降低了乘积系数以防止模型为了拿分而牺牲辅路。
-    # Calculate the kinetic flow rate bonus for the main road,
-    # which is only granted if the main road is green and no side street meltdown is triggered.
-    # The coefficient is reduced to prevent greedy behavior.
-    # 4. 动能流率奖励 (削弱诱惑)
-    kinetic_bonus = 0.0
+            # 提取上游“发车快照”中的车队规模
+            upstream_q = getattr(upstream_ts, 'my_green_start_queue', 0)
 
-    # 只有主路绿灯，且没有触发辅路熔断时，才给绿波奖励
-    if is_main_green and not is_melt_down:
+            # 【核心微调 2】：动态时空窗口
+            # 基础窗口为 10-14 秒。上游积压的车每多 3 辆，尾车到达的时间就越晚，窗口向后延展 1 秒（最多延展 10 秒）
+            window_start = 10
+            window_end = 14 + min(int(upstream_q / 3.0), 10)
+
+            if window_start <= upstream_green_duration <= window_end:
+                if just_turned_green:
+                    green_wave_bonus += 2.0  # 接力暴击奖金
+
+    # 【核心微调 1】：绿波维持（吞吐量）奖金
+    maintenance_bonus = 0.0
+    if is_main_green:
         for lane in traffic_signal.lanes:
             if "top" not in lane and "bottom" not in lane:
-                mean_speed = traffic_signal.sumo.lane.getLastStepMeanSpeed(lane)
+                # 获取总车数和静止车数
                 veh_num = traffic_signal.sumo.lane.getLastStepVehicleNumber(lane)
+                halting_num = traffic_signal.sumo.lane.getLastStepHaltingNumber(lane)
+                # 计算正在移动的车数 (吞吐量)
+                moving_num = veh_num - halting_num
 
-                if mean_speed > 7.0 and veh_num > 0:
-                    # 高速的车越多，奖励越大。As more cars though with higher speed, reward up
-                    kinetic_bonus += (mean_speed / 13.89) * veh_num * 0.05
+                if moving_num > 0:
+                    # 每通过一辆移动的车辆给予 0.1 的持续正向反馈
+                    maintenance_bonus += moving_num * 0.1
 
-    # 计算最终结算奖励。如果触发了熔断，则施加严厉的负分惩罚，倒逼 AI 迅速切换信号灯释放辅路车流。
-    # Calculate the final settlement reward. If a meltdown is triggered, apply a severe
-    # negative penalty to force the AI to switch the traffic lights immediately and release the side street traffic.
-    # 5. 最终结算
-    # 如果触发熔断，额外给予一次性重罚，逼迫它立刻切灯！
-    meltdown_penalty = -5.0 if is_melt_down else 0.0
-    final_reward = pbrs_score + kinetic_bonus + meltdown_penalty
+    # ==========================================
+    # 3.5 专家先验诱导：AC 共振奖金 (AC Synchronization Bonus)
+    # 鼓励外围路口 A0 和 C0 形成同步发车机制，向 B0 施加对称车流
+    # ==========================================
+    ac_sync_bonus = 0.0
+    if my_id in ['A0', 'C0']:
+        # 寻找远端的兄弟节点
+        peer_id = 'C0' if my_id == 'A0' else 'A0'
+        peer_ts = traffic_signal.env.traffic_signals.get(peer_id)
+
+        if peer_ts:
+            # 获取远端兄弟当前的真实相位
+            peer_phase = peer_ts.sumo.trafficlight.getPhase(peer_id)
+            # 如果我和兄弟同时处于主路绿灯，给予共振鼓励！
+            if is_main_green and peer_phase == 0:
+                # 奖励不宜过大，0.5 即可，作为一种“软引导”
+                ac_sync_bonus += 0.5
+
+
+    # 叠加所有正向奖金
+    total_bonus = green_wave_bonus + maintenance_bonus + ac_sync_bonus
+
+    # ==========================================
+    # 4. 奖励结算
+    # ==========================================
+    final_reward = base_penalty + (1.0 * shaping_reward) + total_bonus
     return final_reward
 
-# Map neighbors
+
 NEIGHBOR_MAP = {
     'A0': [None, 'B0'],
     'B0': ['A0', 'C0'],
@@ -166,7 +232,6 @@ class CommObservationFunction(DefaultObservationFunction):
         base_space = super().observation_space()
         base_dim = base_space.shape[0]
 
-        # 新增 6 维：左邻居(3维) + 右邻居(3维)
         new_dim = base_dim + 6
 
         return spaces.Box(
@@ -182,7 +247,6 @@ class CommObservationFunction(DefaultObservationFunction):
         extra_obs = []
         for neighbor_id in neighbors:
             if neighbor_id is None:
-                # 边缘路口的缺失邻居：用 3 个 0.0 占位
                 extra_obs.extend([0.0, 0.0, 0.0])
             else:
                 neighbor_ts = self.ts.env.traffic_signals.get(neighbor_id)
@@ -190,18 +254,15 @@ class CommObservationFunction(DefaultObservationFunction):
                     extra_obs.extend([0.0, 0.0, 0.0])
                     continue
 
-                # 情报 1：主干道排队数 (经过软归一化，上限设为 50 辆，防止输入爆炸)
                 main_arterial_queue = 0
                 for lane in neighbor_ts.lanes:
                     if "top" not in lane and "bottom" not in lane:
                         main_arterial_queue += neighbor_ts.sumo.lane.getLastStepHaltingNumber(lane)
                 queue_norm = min(main_arterial_queue / 50.0, 1.0)
 
-                # 情报 2：邻居是否处于主路绿灯相位 (Phase 0)
                 current_phase = neighbor_ts.sumo.trafficlight.getPhase(neighbor_id)
                 is_main_green = 1.0 if current_phase == 0 else 0.0
 
-                # 情报 3：绿灯已亮秒数前馈 (对齐 max_green=60)
                 green_duration_norm = 0.0
                 if is_main_green == 1.0 and hasattr(neighbor_ts, 'my_green_start'):
                     current_step = getattr(self.ts.env, "sim_step", 0)
@@ -247,11 +308,10 @@ if __name__ == '__main__':
         num_seconds=3600,
         reward_fn=custom_green_wave_reward,
         observation_class=CommObservationFunction,
-        min_green=5,  # 【修复补回】：必须有这个下限，防止1秒切灯鬼畜
-        max_green=60  # 绿灯防死锁安全锁
+        min_green=5,
+        max_green=60
     )
 
-    # 核心拦截器：猴子补丁
     original_reset = env.reset
 
 
@@ -283,10 +343,10 @@ if __name__ == '__main__':
         batch_size=256,
         n_epochs=10,
         clip_range=0.2,
-        ent_coef=0.03,  # 增加熵系数，鼓励在拥堵时尝试新动作
+        ent_coef=0.03,
         target_kl=0.05,
         verbose=1,
-        device="cpu",  # 如果有GPU可改为 "cuda"
+        device="cpu",
         tensorboard_log=tensorboard_log_path
     )
 
@@ -302,8 +362,7 @@ if __name__ == '__main__':
         name_prefix='rl_model'
     )
 
-    print("环境就绪！SB3 正在接收附带上游灯色前馈的军用级情报。开始训练...")
-    # 由于是 3 个智能体 (concat_vec_envs 会将 1 个 env 乘以 3)，总 step 会消耗得比平时快 3 倍
+    print("环境就绪！SB3 正在接收附带上游灯色前馈信息。开始训练...")
     model.learn(total_timesteps=300000, callback=checkpoint_callback, tb_log_name=f"run_{run_idx}")
 
     model.save(os.path.join(run_save_dir, "ppo_marl_model"))
