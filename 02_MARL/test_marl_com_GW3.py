@@ -22,6 +22,17 @@ ROOT_DIR = CURRENT_DIR if "02_MARL" not in CURRENT_DIR else os.path.dirname(CURR
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
 route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
+MAIN_GREEN_STATE = os.environ.get("JUC_MAIN_GREEN_STATE", "rrrrGGggrrrrGGgg")
+SIDE_GREEN_STATE = os.environ.get("JUC_SIDE_GREEN_STATE", "GGggrrrrGGggrrrr")
+
+
+def get_signal_state(sumo, signal_id):
+    return sumo.trafficlight.getRedYellowGreenState(signal_id)
+
+
+def is_main_green_state(state):
+    return state == MAIN_GREEN_STATE
+
 # ！！！！！每次更改：指定您要测试哪一次训练的模型 ！！！！！
 RUN_IDX = 14  # 确保这里是您刚刚跑完 17维雷达优化 的那个编号 (如15)
 RUN_DIR = os.path.join(ROOT_DIR, 'saved_models', f'marl_run_{RUN_IDX}')
@@ -84,9 +95,9 @@ class CommObservationFunction(DefaultObservationFunction):
                         main_arterial_queue += neighbor_ts.sumo.lane.getLastStepHaltingNumber(lane)
                 queue_norm = min(main_arterial_queue / 50.0, 1.0)
 
-                # 情报 2：邻居是否处于主路绿灯相位 (Phase 0)
-                current_phase = neighbor_ts.sumo.trafficlight.getPhase(neighbor_id)
-                is_main_green = 1.0 if current_phase == 0 else 0.0
+                # 情报 2：邻居是否处于主路绿灯状态
+                current_state = get_signal_state(neighbor_ts.sumo, neighbor_id)
+                is_main_green = 1.0 if is_main_green_state(current_state) else 0.0
 
                 # 情报 3：绿灯已亮秒数前馈 (对齐 max_green=60)
                 green_duration_norm = 0.0
@@ -109,8 +120,8 @@ def custom_green_wave_reward(traffic_signal):
     my_id = traffic_signal.id
     current_step = getattr(traffic_signal.env, "sim_step", 0)
 
-    current_phase = traffic_signal.sumo.trafficlight.getPhase(traffic_signal.id)
-    is_main_green = (current_phase == 0)
+    current_state = get_signal_state(traffic_signal.sumo, traffic_signal.id)
+    is_main_green = is_main_green_state(current_state)
 
     # 1. 时间戳维护 (供观测器使用)
     if is_main_green:

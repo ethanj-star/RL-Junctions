@@ -23,6 +23,14 @@ ROOT_DIR = CURRENT_DIR if "02_MARL" not in CURRENT_DIR else os.path.dirname(CURR
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
 route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
+MAIN_GREEN_STATE = os.environ.get("JUC_MAIN_GREEN_STATE", "rrrrGGggrrrrGGgg")
+SIDE_GREEN_STATE = os.environ.get("JUC_SIDE_GREEN_STATE", "GGggrrrrGGggrrrr")
+
+
+def is_main_green_state(ts):
+    state = ts.sumo.trafficlight.getRedYellowGreenState(ts.id)
+    return state == MAIN_GREEN_STATE
+
 # ！！！！！每次更改：指定您要测试哪一次训练的模型 ！！！！！
 RUN_IDX = 8  # 确保这里是您刚刚跑完绿波优化的那个编号
 RUN_DIR = os.path.join(ROOT_DIR, 'saved_models', f'marl_run_{RUN_IDX}')
@@ -86,7 +94,7 @@ def custom_green_wave_reward(traffic_signal):
     current_step = getattr(traffic_signal.env, "sim_step", 0)
 
     def is_main_green(ts):
-        return ts.sumo.trafficlight.getPhase(ts.id) == 0
+        return is_main_green_state(ts)
 
     # ==========================================
     # 1. 独立时间戳维护模块 (解决多智能体异步竞态条件)

@@ -1,11 +1,12 @@
 """
-绿波恢复训练脚本。
-Green-wave recovery fine-tuning script.
+绿波连续通行微调脚本。
+Green-wave progression fine-tuning script.
 
-本文件用于从激进绿波模型继续训练，重点恢复支路服务能力。
-It fine-tunes an aggressive green-wave model to recover side-street service.
+本文件用于在 recovery 模型基础上继续优化主路连续通行。
+It fine-tunes a recovery model to improve arterial progression.
 
-核心思想：保留少量主路 ETA / 自由流奖励，同时增强支路排队、主路超长绿灯和空放主路惩罚。
+核心思想：加入近端车辆、车队成组、自由流、停车惩罚等指标，同时保留支路等待时间硬保护，
+避免再次出现“主路直线很好但支路等待爆炸”的问题。
 """
 
 import os
@@ -25,11 +26,11 @@ from sumo_rl.environment.observations import DefaultObservationFunction
 import supersuit as ss
 
 """
-绿波恢复训练脚本：从激进绿波模型继续训练，重点恢复支路通行能力。
-(English: Recovery fine-tuning after aggressive green-wave training.)
+连续通行绿波训练脚本：在 Run 34 recovery 模型基础上继续优化主路连续通过。
+(English: Progression fine-tuning from the Run 34 recovery model.)
 
-本脚本保留少量绿波塑形，同时提高支路排队、支路等待和主路超时惩罚。
-(English: It keeps light progression shaping while protecting side-street service.)
+本脚本加入主路 ETA、车队、连续通过代理指标和支路等待硬保护。
+(English: It adds ETA, platoon, progression proxies, and side-street wait protection.)
 """
 
 # 路径配置：自动定位项目根目录和 SUMO 输入文件。
@@ -45,25 +46,25 @@ from generate_Random_Traffic import generate_route_file
 net_path = os.path.join(ROOT_DIR, "SUMOroutes.net.xml")
 route_path = os.path.join(ROOT_DIR, "traffic.random.rou.xml")
 
-# 训练随机种子：保证重复实验时结果尽量可比。
-# (Random seed: make repeated experiments more comparable.)
+# 训练随机种子：固定随机性，方便与 Run 34 对比。
+# (Random seed: keep results comparable with Run 34.)
 SEED = 8848
 
-# 热启动配置：默认从激进绿波阶段模型继续训练。
-# (Warm-start settings: continue from the aggressive progression model by default.)
-LOAD_MODEL_RUN_IDX = int(os.environ.get("JUC_LOAD_MODEL_RUN_IDX", "30"))
-LOAD_MODEL_BASENAME = os.environ.get("JUC_LOAD_MODEL_BASENAME", "ppo_marl_model_gw_stage1")
-LOAD_VECNORM_BASENAME = os.environ.get("JUC_LOAD_VECNORM_BASENAME", "vec_normalize_marl_gw_stage1")
+# 热启动配置：Run 35 默认从 Run 34 的 recovery 模型继续训练。
+# (Warm-start settings: Run 35 starts from the Run 34 recovery model.)
+LOAD_MODEL_RUN_IDX = int(os.environ.get("JUC_LOAD_MODEL_RUN_IDX", "34"))
+LOAD_MODEL_BASENAME = os.environ.get("JUC_LOAD_MODEL_BASENAME", "ppo_marl_model_gw_recovery")
+LOAD_VECNORM_BASENAME = os.environ.get("JUC_LOAD_VECNORM_BASENAME", "vec_normalize_marl_gw_recovery")
 
-TOTAL_TIMESTEPS = int(os.environ.get("JUC_TOTAL_TIMESTEPS", "450000"))
+TOTAL_TIMESTEPS = int(os.environ.get("JUC_TOTAL_TIMESTEPS", "400000"))
 
-# 信号灯状态：用真实灯色字符串判断主路/支路绿灯。
+# 信号灯状态：用完整灯色字符串判断主路/支路绿灯。
 # (Signal states: identify main/side green by full state strings.)
 MAIN_GREEN_STATE = os.environ.get("JUC_MAIN_GREEN_STATE", "rrrrGGggrrrrGGgg")
 SIDE_GREEN_STATE = os.environ.get("JUC_SIDE_GREEN_STATE", "GGggrrrrGGggrrrr")
 
-# ETA 与自由流参数：用于判断主路车辆是否正在接近停止线。
-# (ETA/free-flow settings: detect approaching arterial vehicles.)
+# ETA 与自由流参数：描述主路车辆接近停止线和通过状态。
+# (ETA/free-flow settings: describe approaching and passing arterial vehicles.)
 ETA_HORIZON = 22.0
 ETA_DECAY = 8.0
 NEAR_ETA = 7.0
@@ -72,24 +73,36 @@ STOPLINE_DISTANCE = 30.0
 FREE_FLOW_SPEED = 5.0
 MAX_PRESSURE = 5.0
 
-# 恢复阶段奖励权重：PBRS 与支路恢复占主导，绿波塑形保持较弱。
-# (Recovery weights: PBRS and side recovery dominate, progression is light.)
-PBRS_WEIGHT = 1.25
-GREEN_PRESSURE_WEIGHT = 0.045
-RED_PRESSURE_WEIGHT = 0.055
-FREE_FLOW_WEIGHT = 0.025
+# 奖励权重：保留 Run 34 的支路保护，并谨慎增强主路连续通行。
+# (Reward weights: keep side protection and carefully strengthen progression.)
+PBRS_WEIGHT = 1.15
+PRESSURE_REWARD_WEIGHT = 0.035
+GREEN_PRESSURE_WEIGHT = 0.090
+RED_PRESSURE_WEIGHT = 0.070
+FREE_FLOW_WEIGHT = 0.045
 
-SIDE_QUEUE_THRESHOLD = 5.0
-SIDE_QUEUE_WEIGHT = 0.060
-SIDE_RESCUE_REWARD = 0.035
+PROGRESSION_REWARD_WEIGHT = 0.080
+PROGRESSION_STOP_PENALTY = 0.060
+PLATOON_REWARD_WEIGHT = 0.050
+PLATOON_WINDOW = 10.0
+PLATOON_MIN_COUNT = 3
 
-MAX_MAIN_GREEN_SECONDS = 38.0
-MAIN_OVERTIME_WEIGHT = 0.075
+SIDE_QUEUE_THRESHOLD = 6.0
+SIDE_QUEUE_WEIGHT = 0.065
+SIDE_RESCUE_REWARD = 0.040
+SIDE_MAX_WAIT_SOFT = 45.0
+SIDE_MAX_WAIT_HARD = 60.0
+SIDE_EMERGENCY_WAIT = 75.0
+SIDE_WAIT_PENALTY = 0.040
+SIDE_EMERGENCY_PENALTY = 0.120
+
+MAX_MAIN_GREEN_SECONDS = 45.0
+MAIN_OVERTIME_WEIGHT = 0.060
 IDLE_MAIN_GREEN_WEIGHT = 0.080
 MIN_MAIN_PRESSURE_FOR_HOLD = 0.35
 
-# 主路进口和邻居关系：用于主路压力计算和通信观测。
-# (Approaches and neighbors: used for arterial pressure and communication.)
+# 主路进口和邻居关系：用于 ETA 压力、车队指标和通信观测。
+# (Approaches and neighbors: used for ETA pressure, platoons, and communication.)
 MAIN_APPROACH_EDGES = {
     "A0": ["left0A0", "B0A0"],
     "B0": ["A0B0", "C0B0"],
@@ -122,8 +135,8 @@ def generate_route_file_in_root():
         generate_route_file()
 
 
-# 学习率调度：继续训练时逐步降低学习率。
-# (Learning-rate schedule: decay learning rate during fine-tuning.)
+# 学习率调度：Run 35 继续训练时使用较小学习率逐步微调。
+# (Learning-rate schedule: small decaying learning rate for fine-tuning.)
 def linear_schedule_with_min(initial_value: float, min_value: float) -> Callable[[float], float]:
     def func(progress_remaining: float) -> float:
         return min_value + progress_remaining * (initial_value - min_value)
@@ -131,8 +144,8 @@ def linear_schedule_with_min(initial_value: float, min_value: float) -> Callable
     return func
 
 
-# Run 编号工具：自动找到新的保存目录。
-# (Run numbering: find the next save directory.)
+# Run 编号工具：自动创建新的训练输出目录。
+# (Run numbering: create the next training output folder.)
 def get_next_run_number(base_dir, prefix="marl_run_"):
     if not os.path.exists(base_dir):
         return 1
@@ -148,7 +161,7 @@ def get_next_run_number(base_dir, prefix="marl_run_"):
     return max(existing_runs) + 1 if existing_runs else 1
 
 
-# 兼容包装器：统一 PettingZoo/Gymnasium/SB3 的接口返回。
+# 兼容包装器：统一 PettingZoo/Gymnasium/SB3 的返回格式。
 # (Compatibility wrapper: normalize API return formats.)
 class SB3CompatibilityWrapper(VecEnvWrapper):
     def __init__(self, venv):
@@ -172,8 +185,8 @@ class SB3CompatibilityWrapper(VecEnvWrapper):
         return results
 
 
-# 安全调用工具：TraCI 查询失败时返回默认值。
-# (Safe TraCI call: return a default value on query failure.)
+# 安全调用工具：TraCI 查询异常时返回默认值。
+# (Safe TraCI call: return defaults on query failure.)
 def safe_call(default, func, *args):
     try:
         return func(*args)
@@ -181,45 +194,45 @@ def safe_call(default, func, *args):
         return default
 
 
-# 信号状态查询：读取实际红黄绿灯色字符串。
+# 信号状态查询：读取真实红黄绿状态字符串。
 # (Signal query: read actual red/yellow/green state strings.)
 def signal_state(sumo, signal_id: str) -> str:
     return sumo.trafficlight.getRedYellowGreenState(signal_id)
 
 
-# 主路绿灯判断：恢复阶段同样禁止依赖 phase 编号。
-# (Main green check: avoid phase IDs in recovery logic.)
+# 主路绿灯判断：所有绿波逻辑统一使用 state 字符串。
+# (Main green check: use state strings for all progression logic.)
 def is_main_green_state(state: str) -> bool:
     return state == MAIN_GREEN_STATE
 
 
-# 支路绿灯判断：用于给支路救援行为正向奖励。
-# (Side green check: reward side-street rescue service.)
+# 支路绿灯判断：用于判断当前是否正在服务支路。
+# (Side green check: determine whether side streets are being served.)
 def is_side_green_state(state: str) -> bool:
     return state == SIDE_GREEN_STATE
 
 
-# 黄灯判断：避免在过渡相位中错误奖励绿波。
-# (Yellow check: avoid rewarding transition states as progression.)
+# 黄灯判断：黄灯为过渡状态，不作为稳定主路绿灯奖励。
+# (Yellow check: treat yellow as a transition state.)
 def is_yellow_state(state: str) -> bool:
     return "y" in state.lower()
 
 
-# 仿真时间工具：用于判断新回合和主路绿灯持续时间。
-# (Simulation-time helper: track episode resets and main green duration.)
+# 仿真时间工具：用于绿灯持续时间和回合重置判断。
+# (Simulation-time helper: track green duration and episode reset.)
 def current_step(traffic_signal) -> float:
     return float(getattr(traffic_signal.env, "sim_step", 0.0))
 
 
-# 回合起点判断：清理上回合保存的势能和主路绿灯计时。
-# (New-episode check: reset cached shaping state at episode start.)
+# 回合起点判断：新 episode 时清理缓存的势能和计时信息。
+# (New-episode check: clear cached shaping/timing state.)
 def is_new_episode(traffic_signal) -> bool:
     delta_time = float(getattr(traffic_signal.env, "delta_time", 5.0))
     return current_step(traffic_signal) <= delta_time
 
 
-# 主路绿灯计时：统计主路绿灯已经连续保持多久。
-# (Main-green timer: measure continuous main-green duration.)
+# 主路绿灯计时：记录主路绿灯已经连续保持多久。
+# (Main-green timer: track continuous main-green duration.)
 def update_main_green_timer(traffic_signal, state: str):
     if is_new_episode(traffic_signal):
         for attr in ("main_green_start", "last_potential"):
@@ -233,7 +246,7 @@ def update_main_green_timer(traffic_signal, state: str):
         delattr(traffic_signal, "main_green_start")
 
 
-# 主路绿灯持续时间：为超长主路绿灯惩罚提供输入。
+# 主路绿灯持续时间：为主路超时惩罚提供输入。
 # (Main-green elapsed time: input for overtime penalty.)
 def main_green_elapsed(traffic_signal) -> float:
     if not hasattr(traffic_signal, "main_green_start"):
@@ -241,8 +254,8 @@ def main_green_elapsed(traffic_signal) -> float:
     return max(0.0, current_step(traffic_signal) - traffic_signal.main_green_start)
 
 
-# 基础 PBRS 奖励：提供排队优化和势能塑形。
-# (Base PBRS reward: queue optimization and potential shaping.)
+# 基础 PBRS 奖励：保留原模型的排队和势能塑形能力。
+# (Base PBRS reward: retain queue and potential shaping.)
 def pbrs_reward(traffic_signal):
     total_queue = traffic_signal.get_total_queued()
     base_reward = -total_queue
@@ -266,8 +279,8 @@ def pbrs_reward(traffic_signal):
     return (base_reward + 100.0 * shaping_reward) / 100.0
 
 
-# 主路进口指标：统计接近车辆、近端车辆和自由流通过车辆。
-# (Approach metrics: approaching, near, and free-flow arterial vehicles.)
+# 主路进口指标：统计 ETA 压力、近端车辆、自由流车辆、停车车辆和车队代理指标。
+# (Approach metrics: ETA pressure, near/free-flow/stopped vehicles, and platoon proxy.)
 def edge_progression_metrics(sumo, edge_id: str) -> dict:
     lane_id = f"{edge_id}_0"
     lane_length = float(safe_call(0.0, sumo.lane.getLength, lane_id))
@@ -276,6 +289,8 @@ def edge_progression_metrics(sumo, edge_id: str) -> dict:
     pressure = 0.0
     near_count = 0.0
     free_flow_count = 0.0
+    stopped_count = 0.0
+    moving_etas = []
 
     for veh_id in vehicle_ids:
         lane_pos = float(safe_call(0.0, sumo.vehicle.getLanePosition, veh_id))
@@ -283,100 +298,159 @@ def edge_progression_metrics(sumo, edge_id: str) -> dict:
         distance_to_stopline = max(lane_length - lane_pos, 0.0)
         eta = distance_to_stopline / max(speed, MIN_ETA_SPEED)
 
+        if speed < 0.1:
+            stopped_count += 1.0
+
         if eta <= ETA_HORIZON:
             pressure += np.exp(-eta / ETA_DECAY)
             if eta <= NEAR_ETA:
                 near_count += 1.0
+            if speed >= FREE_FLOW_SPEED:
+                moving_etas.append(eta)
 
         if distance_to_stopline <= STOPLINE_DISTANCE and speed >= FREE_FLOW_SPEED:
             free_flow_count += 1.0
+
+    moving_etas.sort()
+    best_group = 0
+    left = 0
+    for right, eta in enumerate(moving_etas):
+        while eta - moving_etas[left] > PLATOON_WINDOW:
+            left += 1
+        best_group = max(best_group, right - left + 1)
 
     return {
         "pressure": float(min(pressure, MAX_PRESSURE)),
         "near_count": float(near_count),
         "free_flow_count": float(min(free_flow_count, 6.0)),
+        "stopped_count": float(stopped_count),
+        "platoon_score": float(max(0, best_group - PLATOON_MIN_COUNT + 1)),
     }
 
 
-# 主路到达压力：聚合当前路口双向主路进口压力。
-# (Main arrival pressure: aggregate bidirectional arterial approaches.)
+# 主路到达指标：聚合当前路口双向主路进口的连续通行信息。
+# (Main arrival metrics: aggregate bidirectional arterial progression data.)
 def main_arrival_metrics(traffic_signal) -> dict:
     pressure = 0.0
     near_count = 0.0
     free_flow_count = 0.0
+    stopped_count = 0.0
+    platoon_score = 0.0
 
     for edge_id in MAIN_APPROACH_EDGES.get(traffic_signal.id, []):
         metrics = edge_progression_metrics(traffic_signal.sumo, edge_id)
         pressure += metrics["pressure"]
         near_count += metrics["near_count"]
         free_flow_count += metrics["free_flow_count"]
+        stopped_count += metrics["stopped_count"]
+        platoon_score += metrics["platoon_score"]
 
     return {
         "pressure": float(min(pressure, MAX_PRESSURE)),
         "near_count": float(near_count),
         "free_flow_count": float(min(free_flow_count, 6.0)),
+        "stopped_count": float(stopped_count),
+        "platoon_score": float(min(platoon_score, 6.0)),
     }
 
 
-# 支路排队统计：恢复阶段用于保护支路不被饿死。
-# (Side queue: protect side streets from starvation.)
-def side_queue(traffic_signal) -> float:
+# 支路队列和等待：同时统计支路排队数量和最大等待时间。
+# (Side queue and wait: count side queues and maximum waiting time.)
+def side_queue_and_wait(traffic_signal) -> tuple[float, float]:
     queue = 0.0
+    max_wait = 0.0
     for lane in traffic_signal.lanes:
         if "top" in lane or "bottom" in lane:
             queue += safe_call(0, traffic_signal.sumo.lane.getLastStepHaltingNumber, lane)
-    return float(queue)
+            for veh_id in safe_call([], traffic_signal.sumo.lane.getLastStepVehicleIDs, lane):
+                max_wait = max(max_wait, safe_call(0.0, traffic_signal.sumo.vehicle.getWaitingTime, veh_id))
+    return float(queue), float(max_wait)
 
 
-# 恢复奖励：保留少量绿波奖励，同时强力惩罚支路排队和主路超时。
-# (Recovery reward: keep light progression while penalizing side queues/overtime.)
-def recovery_reward(traffic_signal):
+# 绿波缩放因子：支路等待过长时削弱或关闭绿波奖励。
+# (Green-wave scale: reduce/disable progression reward under side-street pressure.)
+def green_wave_scale(side_max_wait: float, side_q: float) -> float:
+    if side_max_wait >= SIDE_EMERGENCY_WAIT:
+        return 0.0
+    if side_max_wait >= SIDE_MAX_WAIT_HARD:
+        return 0.25
+    if side_q > SIDE_QUEUE_THRESHOLD + 4.0:
+        return 0.5
+    return 1.0
+
+
+# 连续通行奖励：结合 PBRS、pressure、车队奖励和支路硬保护。
+# (Progression reward: combine PBRS, pressure, platoon rewards, and side protection.)
+def progression_reward(traffic_signal):
     # 1. 读取真实灯色 state，并更新主路连续绿灯计时器。
-    # 计时器用于判断主路绿灯是否已经持续过久。
+    # 该计时器用于限制主路绿灯过长，防止重新造成支路饥饿。
     state = signal_state(traffic_signal.sumo, traffic_signal.id)
     update_main_green_timer(traffic_signal, state)
 
-    # 2. 判断主路绿、支路绿、黄灯状态。
-    # 黄灯是过渡状态，不作为稳定绿波奖励依据。
+    # 2. 判断主路绿、支路绿、黄灯。
+    # 黄灯不作为稳定绿波奖励依据，避免把换相过程误判为有效放行。
     is_main_green = is_main_green_state(state)
     is_side_green = is_side_green_state(state)
     is_yellow = is_yellow_state(state)
 
-    # 3. PBRS 权重较高，恢复阶段优先降低排队和等待。
+    # 3. PBRS 仍然作为基础效率目标，防止绿波奖励压倒平均等待时间。
     reward = PBRS_WEIGHT * pbrs_reward(traffic_signal)
 
-    # 4. 获取主路到达压力和支路排队。
-    # pressure 用于保留少量绿波能力；sq 用于判断支路是否被压制。
+    # 4. 计算主路连续通行指标和支路风险。
+    # metrics 包含 pressure、near_count、free_flow_count、platoon_score、stopped_count 等。
+    # side_max_wait 用于动态压低绿波奖励，避免支路等待时间继续扩大。
     metrics = main_arrival_metrics(traffic_signal)
     pressure = metrics["pressure"]
-    sq = side_queue(traffic_signal)
+    sq, side_max_wait = side_queue_and_wait(traffic_signal)
+    wave_scale = green_wave_scale(side_max_wait, sq)
+
+    # 5. 加入 SUMO-RL 内置 pressure 指标。
+    # get_pressure() 反映进出方向压力差，clip 到 [-1,1] 后作为小权重辅助项。
+    pressure_reward = np.clip(safe_call(0.0, traffic_signal.get_pressure), -10.0, 10.0) / 10.0
+    reward += PRESSURE_REWARD_WEIGHT * pressure_reward
 
     if pressure > 0:
         if is_main_green:
-            # 主路有车且当前主路绿灯：保留轻量绿波奖励。
-            reward += GREEN_PRESSURE_WEIGHT * pressure
-            reward += FREE_FLOW_WEIGHT * metrics["free_flow_count"]
+            # 6. 主路绿灯且主路有车：奖励绿波对齐、自由流、近端通过和车队成组。
+            # wave_scale 会在支路等待过高时自动变小，使绿波奖励让位于支路保护。
+            reward += wave_scale * GREEN_PRESSURE_WEIGHT * pressure
+            reward += wave_scale * FREE_FLOW_WEIGHT * metrics["free_flow_count"]
+            reward += wave_scale * PROGRESSION_REWARD_WEIGHT * metrics["near_count"]
+            reward += wave_scale * PLATOON_REWARD_WEIGHT * metrics["platoon_score"]
+            # 主路车已经进入近端但停车，说明绿波质量不好，因此扣分。
+            reward -= PROGRESSION_STOP_PENALTY * metrics["stopped_count"]
         elif not is_yellow:
-            # 主路有车但当前红灯：轻微惩罚，避免完全破坏连续通行。
+            # 主路有车但红灯，可能破坏连续通行。
             reward -= RED_PRESSURE_WEIGHT * pressure
 
     if is_main_green:
-        # 5. 主路绿灯过长惩罚：超过上限后，持续越久扣分越多。
+        # 7. 主路超长绿灯惩罚：防止模型为了绿波长期不切给支路。
         elapsed = main_green_elapsed(traffic_signal)
         if elapsed > MAX_MAIN_GREEN_SECONDS:
             reward -= MAIN_OVERTIME_WEIGHT * (elapsed - MAX_MAIN_GREEN_SECONDS)
 
-        # 6. 空放主路惩罚：主路压力低但支路有车时，不应继续主路绿灯。
+        # 8. 空放主路惩罚：主路压力不足但支路有排队时，应尽快释放支路。
         if pressure < MIN_MAIN_PRESSURE_FOR_HOLD and sq > 0:
             reward -= IDLE_MAIN_GREEN_WEIGHT * min(sq, 10.0)
 
-        # 7. 支路排队惩罚：防止主路长期绿灯造成支路饿死。
+        # 9. 支路队列和等待时间保护。
+        # soft/hard 两级阈值让模型先温和修正，严重时强制更大惩罚。
         if sq > SIDE_QUEUE_THRESHOLD:
             reward -= SIDE_QUEUE_WEIGHT * (sq - SIDE_QUEUE_THRESHOLD)
 
+        if side_max_wait > SIDE_MAX_WAIT_SOFT:
+            reward -= SIDE_WAIT_PENALTY * ((side_max_wait - SIDE_MAX_WAIT_SOFT) / 5.0)
+
+        if side_max_wait > SIDE_MAX_WAIT_HARD:
+            reward -= SIDE_EMERGENCY_PENALTY * ((side_max_wait - SIDE_MAX_WAIT_HARD) / 5.0)
+
     if is_side_green and sq > SIDE_QUEUE_THRESHOLD:
-        # 8. 支路救援奖励：支路已经排队且获得绿灯时，给正反馈。
+        # 10. 支路救援奖励：支路排队时给支路绿灯，说明策略在恢复公平性。
         reward += SIDE_RESCUE_REWARD * min(sq - SIDE_QUEUE_THRESHOLD, 10.0)
+
+    if is_side_green and side_max_wait > SIDE_MAX_WAIT_SOFT:
+        # 11. 等待时间救援奖励：支路车辆已经等太久时，支路绿灯得到额外正反馈。
+        reward += SIDE_RESCUE_REWARD * min((side_max_wait - SIDE_MAX_WAIT_SOFT) / 5.0, 10.0)
 
     return reward
 
@@ -420,33 +494,33 @@ class CommObservationFunction(DefaultObservationFunction):
         return np.array(np.concatenate([base_obs, extra_obs]), dtype=np.float32)
 
 
-# 环境构建：加载 VecNormalize，并在每回合重生成交通流。
-# (Environment builder: load VecNormalize and regenerate traffic per episode.)
+# 环境构建：加载 Run 34 标准化统计，并在每回合重生成交通。
+# (Environment builder: load Run 34 VecNormalize and regenerate traffic per episode.)
 def build_env(csv_base_path, vec_norm_path):
-    # 1. 构建恢复训练环境。
-    # reward_fn 使用 recovery_reward，min_green/max_green 限制信号灯切换的最短/最长绿灯时间。
+    # 1. 构建 progression 微调环境。
+    # reward_fn 使用 progression_reward，max_green 提供主路连续绿灯上限的环境约束。
     env = parallel_env(
         net_file=net_path,
         route_file=route_path,
         out_csv_name=csv_base_path,
         use_gui=False,
         num_seconds=3600,
-        reward_fn=recovery_reward,
+        reward_fn=progression_reward,
         observation_class=CommObservationFunction,
         min_green=10,
-        max_green=55,
+        max_green=60,
     )
 
     original_reset = env.reset
 
     def custom_reset(*args, **kwargs):
-        # 每回合重新生成随机交通流，提升模型对不同到达模式的泛化能力。
+        # 每个 episode 更新 route 文件，避免模型只适配单一交通流样本。
         print("Regenerating random bidirectional traffic for this episode...")
         generate_route_file_in_root()
         return original_reset(*args, **kwargs)
 
     env.reset = custom_reset
-    # 2. 将 PettingZoo 环境转换为 SB3 的 VecEnv，并用 VecMonitor 记录回合统计。
+    # 2. 转换为 SB3 兼容的向量环境，并记录 episode 统计。
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = ss.concat_vec_envs_v1(env, num_vec_envs=1, num_cpus=1, base_class="stable_baselines3")
     env = SB3CompatibilityWrapper(env)
@@ -455,16 +529,16 @@ def build_env(csv_base_path, vec_norm_path):
     if not os.path.exists(vec_norm_path):
         raise FileNotFoundError(f"VecNormalize file not found: {vec_norm_path}")
 
-    # 3. 加载源模型训练时的环境感知状态 (VecNormalize)。
-    # env.training=True 表示继续更新观测均值/方差；norm_reward=False 保留真实奖励绝对值。
+    # 3. 加载 Run 34/recovery 阶段的 VecNormalize。
+    # 继续训练必须沿用源模型的观测归一化，否则同一个物理状态会变成不同尺度的神经网络输入。
     env = VecNormalize.load(vec_norm_path, env)
     env.training = True
     env.norm_reward = False
     return env
 
 
-# 源模型路径：读取要继续训练的模型和标准化统计。
-# (Source paths: locate model and normalization statistics for warm start.)
+# 源模型路径：定位要继续训练的 Run 34 模型与标准化文件。
+# (Source paths: locate the model and normalization file for warm start.)
 def source_paths():
     source_dir = os.path.join(ROOT_DIR, "saved_models", f"marl_run_{LOAD_MODEL_RUN_IDX}")
     model_path = os.path.join(source_dir, f"{LOAD_MODEL_BASENAME}.zip")
@@ -478,12 +552,12 @@ def source_paths():
     return model_path, vec_norm_path
 
 
-# 主程序：从激进绿波模型继续训练，保存 recovery 模型。
-# (Main entry: fine-tune from aggressive model and save recovery outputs.)
+# 主程序：从 recovery 模型继续训练，并保存 progression 模型。
+# (Main entry: fine-tune from recovery and save progression outputs.)
 if __name__ == "__main__":
-    print("Initializing MARL green-wave recovery fine-tuning...")
+    print("Initializing MARL green-wave progression fine-tuning...")
 
-    # 1. 固定随机种子，减少不同运行之间的随机差异。
+    # 1. 固定随机种子，便于复现实验。
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -506,19 +580,15 @@ if __name__ == "__main__":
     print(f"Fine-tuning from model: {model_path}")
     print(f"Using VecNormalize stats: {vec_norm_path}")
 
-    # 2. 先生成初始交通流，再构建环境。
-    # 后续每个 episode 会在 custom_reset 中继续重生成。
+    # 2. 从 recovery 模型和归一化统计继续训练，而不是从零训练。
     generate_route_file_in_root()
     env = build_env(csv_base_path, vec_norm_path)
-
-    # 3. 加载源 PPO 模型继续训练。
-    # 这里不是重新初始化网络，而是在已有绿波策略上进行支路恢复微调。
     model = PPO.load(
         model_path,
         env=env,
         tensorboard_log=os.path.join(ROOT_DIR, "logs", "ppo_marl_tb"),
     )
-    model.learning_rate = linear_schedule_with_min(1e-4, 2e-5)
+    model.learning_rate = linear_schedule_with_min(5e-5, 1e-5)
     model.ent_coef = 0.01
 
     print("=" * 70)
@@ -528,6 +598,7 @@ if __name__ == "__main__":
     print(f"Source model: {LOAD_MODEL_BASENAME}")
     print(f"Main overtime cap: {MAX_MAIN_GREEN_SECONDS}s")
     print(f"Side queue threshold: {SIDE_QUEUE_THRESHOLD}")
+    print(f"Side hard wait threshold: {SIDE_MAX_WAIT_HARD}s")
     print("=" * 70)
 
     checkpoint_callback = CheckpointCallback(
@@ -539,15 +610,16 @@ if __name__ == "__main__":
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS,
         callback=checkpoint_callback,
-        tb_log_name=f"run_{run_idx}_gw_recovery",
+        tb_log_name=f"run_{run_idx}_gw_progression",
         reset_num_timesteps=True,
     )
 
-    # 4. 同时保存通用名称和 recovery 专用名称，方便绘图脚本和报告脚本调用。
+    # 3. 保存通用名称和 progression 专用名称。
+    # 通用名称方便旧脚本自动查找；专用名称方便报告中区分实验阶段。
     model.save(os.path.join(run_save_dir, "ppo_marl_model"))
     env.save(os.path.join(run_save_dir, "vec_normalize_marl.pkl"))
-    model.save(os.path.join(run_save_dir, "ppo_marl_model_gw_recovery"))
-    env.save(os.path.join(run_save_dir, "vec_normalize_marl_gw_recovery.pkl"))
+    model.save(os.path.join(run_save_dir, "ppo_marl_model_gw_progression"))
+    env.save(os.path.join(run_save_dir, "vec_normalize_marl_gw_progression.pkl"))
 
     env.close()
-    print(f"Recovery fine-tuning finished. Outputs saved to: {run_save_dir}")
+    print(f"Progression fine-tuning finished. Outputs saved to: {run_save_dir}")

@@ -37,7 +37,7 @@ ROOT_DIR = os.path.dirname(CURRENT_DIR)
 # 在获取的路径上加上文件名，且不用+可以自动处理跨平台操作系统的路径斜杠问题。a
 # (Append filenames using os.path.join to handle cross-platform slash issues automatically instead of using '+')
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
-# 【修改1：换交通流】对接 8 向泊松随机车流
+# 对接 8 向泊松随机车流
 route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
 

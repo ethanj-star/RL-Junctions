@@ -30,6 +30,17 @@ ROOT_DIR = os.path.dirname(CURRENT_DIR)
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
 route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
+MAIN_GREEN_STATE = os.environ.get("JUC_MAIN_GREEN_STATE", "rrrrGGggrrrrGGgg")
+SIDE_GREEN_STATE = os.environ.get("JUC_SIDE_GREEN_STATE", "GGggrrrrGGggrrrr")
+
+
+def get_signal_state(sumo, signal_id):
+    return sumo.trafficlight.getRedYellowGreenState(signal_id)
+
+
+def is_main_green_state(state):
+    return state == MAIN_GREEN_STATE
+
 
 def get_next_run_number(base_dir, prefix="marl_run_"):
     if not os.path.exists(base_dir):
@@ -84,16 +95,16 @@ def custom_green_wave_reward(traffic_signal):
             delattr(traffic_signal, 'my_green_start')
         if hasattr(traffic_signal, 'my_green_start_queue'):
             delattr(traffic_signal, 'my_green_start_queue')
-        if hasattr(traffic_signal, 'last_phase'):
-            delattr(traffic_signal, 'last_phase')
+        if hasattr(traffic_signal, 'last_signal_state'):
+            delattr(traffic_signal, 'last_signal_state')
 
-    current_phase = traffic_signal.sumo.trafficlight.getPhase(traffic_signal.id)
-    is_main_green = (current_phase == 0)
+    current_state = get_signal_state(traffic_signal.sumo, traffic_signal.id)
+    is_main_green = is_main_green_state(current_state)
 
-    if not hasattr(traffic_signal, 'last_phase'):
-        traffic_signal.last_phase = current_phase
-    just_turned_green = (is_main_green and traffic_signal.last_phase != 0)
-    traffic_signal.last_phase = current_phase
+    if not hasattr(traffic_signal, 'last_signal_state'):
+        traffic_signal.last_signal_state = current_state
+    just_turned_green = (is_main_green and traffic_signal.last_signal_state != MAIN_GREEN_STATE)
+    traffic_signal.last_signal_state = current_state
 
     # ==========================================
     # 1. 独立时间戳与“发车快照”维护模块
@@ -194,10 +205,10 @@ def custom_green_wave_reward(traffic_signal):
         peer_ts = traffic_signal.env.traffic_signals.get(peer_id)
 
         if peer_ts:
-            # 获取远端兄弟当前的真实相位
-            peer_phase = peer_ts.sumo.trafficlight.getPhase(peer_id)
+            # 获取远端兄弟当前的真实灯色
+            peer_state = get_signal_state(peer_ts.sumo, peer_id)
             # 如果我和兄弟同时处于主路绿灯，给予共振鼓励！
-            if is_main_green and peer_phase == 0:
+            if is_main_green and is_main_green_state(peer_state):
                 # 奖励不宜过大，0.5 即可，作为一种“软引导”
                 ac_sync_bonus += 0.5
 
@@ -260,8 +271,8 @@ class CommObservationFunction(DefaultObservationFunction):
                         main_arterial_queue += neighbor_ts.sumo.lane.getLastStepHaltingNumber(lane)
                 queue_norm = min(main_arterial_queue / 50.0, 1.0)
 
-                current_phase = neighbor_ts.sumo.trafficlight.getPhase(neighbor_id)
-                is_main_green = 1.0 if current_phase == 0 else 0.0
+                current_state = get_signal_state(neighbor_ts.sumo, neighbor_id)
+                is_main_green = 1.0 if is_main_green_state(current_state) else 0.0
 
                 green_duration_norm = 0.0
                 if is_main_green == 1.0 and hasattr(neighbor_ts, 'my_green_start'):

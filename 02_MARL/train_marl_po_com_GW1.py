@@ -30,6 +30,17 @@ ROOT_DIR = os.path.dirname(CURRENT_DIR)
 net_path = os.path.join(ROOT_DIR, 'SUMOroutes.net.xml')
 route_path = os.path.join(ROOT_DIR, 'traffic.random.rou.xml')
 
+MAIN_GREEN_STATE = os.environ.get("JUC_MAIN_GREEN_STATE", "rrrrGGggrrrrGGgg")
+SIDE_GREEN_STATE = os.environ.get("JUC_SIDE_GREEN_STATE", "GGggrrrrGGggrrrr")
+
+
+def get_signal_state(sumo, signal_id):
+    return sumo.trafficlight.getRedYellowGreenState(signal_id)
+
+
+def is_main_green_state(state):
+    return state == MAIN_GREEN_STATE
+
 
 def get_next_run_number(base_dir, prefix="marl_run_"):
     if not os.path.exists(base_dir):
@@ -85,22 +96,19 @@ def custom_green_wave_reward(traffic_signal):
     if is_new_episode:
         if hasattr(traffic_signal, 'my_green_start'):
             delattr(traffic_signal, 'my_green_start')
-        if hasattr(traffic_signal, 'last_phase'):
-            delattr(traffic_signal, 'last_phase')
+        if hasattr(traffic_signal, 'last_signal_state'):
+            delattr(traffic_signal, 'last_signal_state')
 
-    # 获取当前相位
-    # 通过底层接口获取当前实际相位，并判断是否为主路绿灯（假设相位0为主路绿灯）
-    current_phase = traffic_signal.sumo.trafficlight.getPhase(traffic_signal.id)
-    is_main_green = (current_phase == 0)
+    # 通过真实灯色判断是否为主路绿灯
+    current_state = get_signal_state(traffic_signal.sumo, traffic_signal.id)
+    is_main_green = is_main_green_state(current_state)
 
-    # 状态追踪：判断是否“刚刚”切为绿灯
-    # 如果没有上一相位的记录则初始化
-    if not hasattr(traffic_signal, 'last_phase'):
-        traffic_signal.last_phase = current_phase
+    # 状态追踪：判断是否“刚刚”切为主路绿灯
+    if not hasattr(traffic_signal, 'last_signal_state'):
+        traffic_signal.last_signal_state = current_state
     # 如果当前是绿灯且上一帧不是绿灯，说明处于绿灯上升沿（刚变绿）
-    just_turned_green = (is_main_green and traffic_signal.last_phase != 0)
-    # 更新上一相位记录
-    traffic_signal.last_phase = current_phase
+    just_turned_green = (is_main_green and traffic_signal.last_signal_state != MAIN_GREEN_STATE)
+    traffic_signal.last_signal_state = current_state
 
 
     # 1. 独立时间戳维护模块
