@@ -1,0 +1,3 @@
+﻿metric,episode,best_value,rolling_sd,unit
+waiting_time,133,52.7123439667129,2.1588090166347125,s
+queue_length,132,11.322884882108182,0.37459468112680944,vehicles
