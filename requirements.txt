@@ -1,0 +1,11 @@
+gymnasium==1.1.1
+matplotlib>=3.7,<4
+numpy==2.0.2
+pandas==2.3.3
+pettingzoo==1.22.3
+stable-baselines3==2.7.1
+sumo-rl==1.4.5
+sumolib==1.24.0
+supersuit==3.7.1
+torch==2.8.0
+traci==1.24.0
