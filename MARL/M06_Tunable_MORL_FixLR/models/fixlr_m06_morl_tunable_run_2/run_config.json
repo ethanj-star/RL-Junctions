@@ -1,0 +1,22 @@
+{
+  "task_id": "M06-888",
+  "module": "M06_MORL_TunablePref_FixLR",
+  "train_script": "train.py",
+  "seed": 888,
+  "run_idx": 2,
+  "timesteps": 1000000,
+  "learning_rate": "3e-5 fixed",
+  "python": "D:\\miniconda\\envs\\marl_env\\python.exe",
+  "dependencies": {
+    "python": "3.9.25",
+    "SUMO_HOME": "D:\\SUMO111",
+    "stable-baselines3": "2.7.1",
+    "sumo-rl": "1.4.5",
+    "supersuit": "3.7.1",
+    "torch": "2.8.0",
+    "numpy": "2.0.2",
+    "pandas": "2.3.3"
+  },
+  "started_at": "2026-08-01 13:41:48",
+  "finished_at": "2026-08-01 18:06:14"
+}

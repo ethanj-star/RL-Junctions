@@ -1,0 +1,22 @@
+{
+  "task_id": "M03A-666",
+  "module": "M03A_ActivePhase_FixLR",
+  "train_script": "train_active_phase.py",
+  "seed": 666,
+  "run_idx": 1,
+  "timesteps": 300000,
+  "learning_rate": "3e-5 fixed",
+  "python": "D:\\miniconda\\envs\\marl_env\\python.exe",
+  "dependencies": {
+    "python": "3.9.25",
+    "SUMO_HOME": "D:\\SUMO111",
+    "stable-baselines3": "2.7.1",
+    "sumo-rl": "1.4.5",
+    "supersuit": "3.7.1",
+    "torch": "2.8.0",
+    "numpy": "2.0.2",
+    "pandas": "2.3.3"
+  },
+  "started_at": "2026-07-31 23:15:41",
+  "finished_at": "2026-08-01 00:09:57"
+}

@@ -1,0 +1,22 @@
+{
+  "task_id": "M02-888",
+  "module": "MARL/02_Multi_Queue_DynamicLR",
+  "train_script": "train.py",
+  "seed": 888,
+  "run_idx": 2,
+  "timesteps": 300000,
+  "learning_rate": "linear 3e-4 to 3e-5",
+  "python": "D:\\miniconda\\envs\\marl_env\\python.exe",
+  "dependencies": {
+    "python": "3.9.25",
+    "SUMO_HOME": "D:\\SUMO111",
+    "stable-baselines3": "2.7.1",
+    "sumo-rl": "1.4.5",
+    "supersuit": "3.7.1",
+    "torch": "2.8.0",
+    "numpy": "2.0.2",
+    "pandas": "2.3.3"
+  },
+  "started_at": "2026-07-19 17:48:05",
+  "finished_at": "2026-07-19 18:36:20"
+}

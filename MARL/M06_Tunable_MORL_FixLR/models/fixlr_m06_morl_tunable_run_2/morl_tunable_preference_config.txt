@@ -1,0 +1,13 @@
+Tunable MORL green-wave training configuration
+objective_order=delay,green_wave,free_flow,side_fairness,spillback
+preference_range_delay=0.380000:0.550000
+preference_range_green_wave=0.150000:0.320000
+preference_range_free_flow=0.060000:0.140000
+preference_range_side_fairness=0.150000:0.300000
+preference_range_spillback=0.030000:0.120000
+total_timesteps=1000000
+min_green=5
+max_green=55
+preference_dim=5
+observation_layout=default_plus_18_traffic_features_plus_5_preferences
+feature_extractor=default_sb3_mlp_policy
